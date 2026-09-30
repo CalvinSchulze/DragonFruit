@@ -1,10 +1,10 @@
-name: Build nightly
+name: Build preview
 
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: Branch to build the nightly release from
+        description: Branch to build the preview release from
         required: true
         type: string
         default: dev
@@ -32,26 +32,20 @@ concurrency:
   group: >-
     ${{ github.event_name == 'issue_comment'
         && format('preview-pr-{0}', github.event.issue.number)
-        || format('nightly-{0}', github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name) }}
+        || format('preview-{0}', github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name) }}
   cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
 
 env:
-  # "nightly" is being retired in favour of "preview" (see docs/dev/releases.md).
-  # Both spellings are accepted while the old one is phased out; the new label is
-  # the one this workflow applies.
   PREVIEW_LABEL: preview-build
-  NIGHTLY_LABEL: nightly-build
 
 jobs:
-  # ── Comment handler: /preview (or the deprecated /nightly) ──────────────
-  activate-nightly:
+  # ── Comment handler: /preview and /create-preview-external ──────────────
+  activate-preview:
     if: >
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       (startsWith(github.event.comment.body, '/preview') ||
-       startsWith(github.event.comment.body, '/nightly') ||
        startsWith(github.event.comment.body, '@github-actions build preview') ||
-       startsWith(github.event.comment.body, '@github-actions build nightly') ||
        startsWith(github.event.comment.body, '/create-preview-external'))
     runs-on: ubuntu-latest
     permissions:
@@ -246,10 +240,10 @@ jobs:
           script: |
             const body = context.payload.comment.body;
             // Everything after the command (with trailing space) is the custom
-            // name. Several spellings are accepted, and the prefix that actually
-            // matched is the one stripped — slicing a hard-coded '/nightly' off
-            // a '/preview' comment silently drops the name.
-            for (const prefix of ['/create-preview-external', '/preview', '/nightly']) {
+            // name. Both commands are accepted, and the prefix that actually
+            // matched is the one stripped — /create-preview-external must be
+            // tested first, or /preview would never match it.
+            for (const prefix of ['/create-preview-external', '/preview']) {
               if (!body.startsWith(prefix)) continue;
               const rest = body.slice(prefix.length).trim();
               if (rest) {
@@ -271,12 +265,6 @@ jobs:
         run: |
           gh issue edit "$PR" --add-label "${{ env.PREVIEW_LABEL }}" --repo "${{ github.repository }}"
 
-          # Drop the old label as the new one goes on, so a PR never carries
-          # both and "remove the label to stop rebuilding" stays unambiguous.
-          # Removing a label the PR does not have is a no-op; do not let it fail
-          # the run either way.
-          gh issue edit "$PR" --remove-label "${{ env.NIGHTLY_LABEL }}" --repo "${{ github.repository }}" || true
-
       - name: Trigger immediate preview build
         if: steps.route.outputs.result == 'internal' || steps.route.outputs.result == 'external'
         env:
@@ -296,7 +284,7 @@ jobs:
             args+=(-f release_name="$RELEASE_NAME")
           fi
 
-          gh workflow run build-nightly.yml "${args[@]}"
+          gh workflow run build-preview.yml "${args[@]}"
 
       - name: Acknowledge activation
         if: steps.route.outputs.result == 'internal' || steps.route.outputs.result == 'external'
@@ -314,7 +302,7 @@ jobs:
             const branch = process.env.BUILD_BRANCH;
             const actions =
               `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/` +
-              `${context.repo.repo}/actions/workflows/build-nightly.yml`;
+              `${context.repo.repo}/actions/workflows/build-preview.yml`;
 
             const rows = external
               ? [
@@ -456,7 +444,7 @@ jobs:
               perf/*) human_name="Perf: ${branch_name#perf/}" ;;
               ci/*)   human_name="CI: ${branch_name#ci/}" ;;
               preview/pr-*) human_name="Preview: PR ${branch_name#preview/pr-}" ;;
-              *)      human_name="Nightly: ${branch_name}" ;;
+              *)      human_name="Preview: ${branch_name}" ;;
             esac
 
             # Replace underscores and hyphens with spaces, then title-case each word
@@ -473,7 +461,10 @@ jobs:
             human_name="${prefix}: ${capitalized}"
           fi
 
-          release_tag="nightly_${safe_branch}"
+          # Imported external PRs live on preview/pr-N, so safe_branch is
+          # already "preview_pr-N" — strip the prefix before re-adding it, or
+          # the tag comes out as preview_preview_pr-N.
+          release_tag="preview_${safe_branch#preview_}"
 
           echo "branch=${branch_name}" >> "$GITHUB_OUTPUT"
           echo "safe_branch=${safe_branch}" >> "$GITHUB_OUTPUT"
@@ -497,7 +488,7 @@ jobs:
           run-id: ${{ inputs.pr_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Rename DMG to nightly convention
+      - name: Rename DMG to preview convention
         shell: bash
         env:
           SAFE_BRANCH: ${{ needs.derive.outputs.safe_branch }}
@@ -505,10 +496,10 @@ jobs:
           VERSION: ${{ needs.derive.outputs.version }}
         run: |
           find macos-artifacts -name "*.dmg" -type f 2>/dev/null || echo "No .dmg files found"
-          nightly_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_nightly"
+          preview_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_preview"
           src="$(find macos-artifacts -name "*.dmg" -type f | head -1)"
           if [ -n "$src" ]; then
-            cp -v "$src" "macos-artifacts/${nightly_tag}.dmg"
+            cp -v "$src" "macos-artifacts/${preview_tag}.dmg"
           else
             echo "No DMG file found in downloaded artifacts"
             exit 1
@@ -518,7 +509,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: dragonfruit-macos-universal
-          path: macos-artifacts/*_DragonFruit_nightly.dmg
+          path: macos-artifacts/*_DragonFruit_preview.dmg
           if-no-files-found: error
 
   # ── Build matrix ────────────────────────────────────────────────────────
@@ -624,10 +615,10 @@ jobs:
           COMMIT_HASH: ${{ needs.derive.outputs.commit_hash }}
           VERSION: ${{ needs.derive.outputs.version }}
         run: |
-          nightly_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_nightly"
+          preview_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_preview"
 
           for f in src-tauri/target/*/release/bundle/nsis/*-setup.exe; do
-            [ -e "$f" ] && mv -v "$f" "$(dirname "$f")/${nightly_tag}.exe"
+            [ -e "$f" ] && mv -v "$f" "$(dirname "$f")/${preview_tag}.exe"
           done
 
       - name: Rename flatpak artifact
@@ -638,10 +629,10 @@ jobs:
           COMMIT_HASH: ${{ needs.derive.outputs.commit_hash }}
           VERSION: ${{ needs.derive.outputs.version }}
         run: |
-          nightly_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_nightly"
+          preview_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_preview"
 
           for f in src-tauri/target/release/bundle/flatpak/*.flatpak; do
-            [ -e "$f" ] && mv -v "$f" "$(dirname "$f")/${nightly_tag}.flatpak"
+            [ -e "$f" ] && mv -v "$f" "$(dirname "$f")/${preview_tag}.flatpak"
           done
 
       - name: Upload Windows installer
@@ -649,7 +640,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
-          path: src-tauri/target/*/release/bundle/nsis/*_DragonFruit_nightly.exe
+          path: src-tauri/target/*/release/bundle/nsis/*_DragonFruit_preview.exe
           if-no-files-found: error
 
       - name: Upload flatpak artifact
@@ -657,7 +648,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
-          path: src-tauri/target/release/bundle/flatpak/*_DragonFruit_nightly.flatpak
+          path: src-tauri/target/release/bundle/flatpak/*_DragonFruit_preview.flatpak
           if-no-files-found: error
 
   # ── Fallback: build macOS Universal natively (manual dispatch, no PR check) ─
@@ -731,29 +722,29 @@ jobs:
           node scripts/macos-embed-appex.mjs --target universal-apple-darwin
           node scripts/verify-universal-bundle.mjs
 
-      - name: Rename DMG for nightly release
+      - name: Rename DMG for preview release
         shell: bash
         env:
           SAFE_BRANCH: ${{ needs.derive.outputs.safe_branch }}
           COMMIT_HASH: ${{ needs.derive.outputs.commit_hash }}
           VERSION: ${{ needs.derive.outputs.version }}
         run: |
-          nightly_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_nightly"
+          preview_tag="${SAFE_BRANCH}_${COMMIT_HASH}_${VERSION}_DragonFruit_preview"
 
           for f in src-tauri/target/*/release/bundle/dmg/*.dmg; do
-            [ -e "$f" ] && mv -v "$f" "$(dirname "$f")/${nightly_tag}.dmg"
+            [ -e "$f" ] && mv -v "$f" "$(dirname "$f")/${preview_tag}.dmg"
           done
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
         with:
           name: dragonfruit-macos-universal
-          path: src-tauri/target/*/release/bundle/dmg/*_DragonFruit_nightly.dmg
+          path: src-tauri/target/*/release/bundle/dmg/*_DragonFruit_preview.dmg
           if-no-files-found: error
 
-  # ── Publish nightly prerelease ──────────────────────────────────────────
-  publish-nightly:
-    name: Publish nightly prerelease
+  # ── Publish preview prerelease ──────────────────────────────────────────
+  publish-preview:
+    name: Publish preview prerelease
     if: always() && !cancelled() && needs.derive.result == 'success' && needs.build-tauri.result == 'success'
     needs:
       - derive
@@ -767,7 +758,7 @@ jobs:
         with:
           path: release-assets
 
-      - name: Remove old nightly release if exists
+      - name: Remove old preview release if exists
         uses: actions/github-script@v9
         env:
           TAG: ${{ needs.derive.outputs.release_tag }}
@@ -816,13 +807,13 @@ jobs:
               sha
             });
 
-      - name: Publish nightly prerelease
+      - name: Publish preview prerelease
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.derive.outputs.release_tag }}
           name: ${{ needs.derive.outputs.release_name }}
           body: |
-            🌙 **Nightly build** from branch \`${{ needs.derive.outputs.branch }}\`
+            🌙 **Branch preview build** from branch \`${{ needs.derive.outputs.branch }}\`
 
             | Attribute | Value |
             |---|---|
