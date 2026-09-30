@@ -192,9 +192,9 @@
                   .join('');
       }
 
-      function isRecentNightly(release) {
+      function isRecentPreview(release) {
             if (!release?.prerelease || !release?.tag_name) return false;
-            if (!release.tag_name.startsWith('nightly_')) return false;
+            if (!release.tag_name.startsWith('preview_')) return false;
             if (!release.published_at) return false;
             const ageMs = Date.now() - new Date(release.published_at).getTime();
             const cutoff = 14 * 24 * 60 * 60 * 1000;
@@ -204,21 +204,21 @@
       function findDevPreviewRelease(releases) {
             if (!releases?.length) return null;
 
-            // Find the latest prerelease that is not a nightly build.
+            // Find the latest prerelease that is not a preview build.
             // Dev releases are tagged "v0.1.10" style (no dev_ prefix anymore).
             const devPreview = (releases || [])
-                  .filter((r) => r?.prerelease && r?.tag_name && !r.tag_name.startsWith('nightly_') && r.tag_name.startsWith('v'))
+                  .filter((r) => r?.prerelease && r?.tag_name && !r.tag_name.startsWith('preview_') && r.tag_name.startsWith('v'))
                   .sort((a, b) => new Date(b.published_at || 0) - new Date(a.published_at || 0));
 
             return devPreview[0] || null;
       }
 
-      function collectRecentNightlies(releases) {
-            return (releases || []).filter(isRecentNightly).slice(0, 20);
+      function collectRecentPreviews(releases) {
+            return (releases || []).filter(isRecentPreview).slice(0, 20);
       }
 
-      function buildNightlyRow(release) {
-            const name = release.tag_name || release.name || 'Nightly';
+      function buildPreviewRow(release) {
+            const name = release.tag_name || release.name || 'Preview';
             const tag = release.tag_name;
             const date = formatDate(release.published_at);
             const assets = release.assets || [];
@@ -232,70 +232,70 @@
 
             const releaseUrl = release.html_url || `${RELEASES_URL}/tag/${tag}`;
 
-            return `<div class="df-modal-nightly-row" data-tag="${tag}">
-                  <div class="df-modal-nightly-info">
-                        <a class="df-modal-nightly-name" href="${releaseUrl}" target="_blank" rel="noopener">${name}</a>
-                        <span class="df-modal-nightly-meta">${date}</span>
+            return `<div class="df-modal-preview-row" data-tag="${tag}">
+                  <div class="df-modal-preview-info">
+                        <a class="df-modal-preview-name" href="${releaseUrl}" target="_blank" rel="noopener">${name}</a>
+                        <span class="df-modal-preview-meta">${date}</span>
                   </div>
-                  <div class="df-modal-nightly-assets">${assetLinks || '<span class="df-modal-no-assets">No assets</span>'}</div>
+                  <div class="df-modal-preview-assets">${assetLinks || '<span class="df-modal-no-assets">No assets</span>'}</div>
             </div>`;
       }
 
-      function openNightlyModal(nightlies) {
-            const overlay = document.querySelector('#nightly-modal-overlay');
-            const body = document.querySelector('#nightly-modal-body');
+      function openPreviewModal(previews) {
+            const overlay = document.querySelector('#preview-modal-overlay');
+            const body = document.querySelector('#preview-modal-body');
             if (!overlay || !body) return;
 
-            body.innerHTML = nightlies.length
-                  ? nightlies.map(buildNightlyRow).join('')
-                  : '<p class="df-modal-empty">No recent nightly builds available.</p>';
+            body.innerHTML = previews.length
+                  ? previews.map(buildPreviewRow).join('')
+                  : '<p class="df-modal-empty">No recent preview builds available.</p>';
 
             overlay.hidden = false;
             document.body.classList.add('df-modal-open');
       }
 
-      function closeNightlyModal() {
-            const overlay = document.querySelector('#nightly-modal-overlay');
+      function closePreviewModal() {
+            const overlay = document.querySelector('#preview-modal-overlay');
             if (!overlay) return;
             overlay.hidden = true;
             document.body.classList.remove('df-modal-open');
       }
 
-      function initNightlyModal() {
-            const showAllBtn = document.querySelector('#show-all-nightlies');
-            const overlay = document.querySelector('#nightly-modal-overlay');
-            const closeBtn = document.querySelector('#nightly-modal-close');
+      function initPreviewModal() {
+            const showAllBtn = document.querySelector('#show-all-previews');
+            const overlay = document.querySelector('#preview-modal-overlay');
+            const closeBtn = document.querySelector('#preview-modal-close');
             if (!showAllBtn || !overlay || !closeBtn) return;
 
             showAllBtn.addEventListener('click', () => {
                   // Fetch the full list again so the modal is always fresh
                   fetchJson(RELEASES_API_URL)
                         .then((releases) => {
-                              const nightlies = collectRecentNightlies(releases);
-                              openNightlyModal(nightlies);
+                              const previews = collectRecentPreviews(releases);
+                              openPreviewModal(previews);
                         })
                         .catch(() => {
-                              const body = document.querySelector('#nightly-modal-body');
-                              if (body) body.innerHTML = '<p class="df-modal-empty">Failed to load nightlies.</p>';
+                              const body = document.querySelector('#preview-modal-body');
+                              if (body) body.innerHTML = '<p class="df-modal-empty">Failed to load previews.</p>';
                               overlay.hidden = false;
                               document.body.classList.add('df-modal-open');
                         });
             });
 
-            closeBtn.addEventListener('click', closeNightlyModal);
+            closeBtn.addEventListener('click', closePreviewModal);
 
             overlay.addEventListener('click', (e) => {
-                  if (e.target === overlay) closeNightlyModal();
+                  if (e.target === overlay) closePreviewModal();
             });
 
             document.addEventListener('keydown', (e) => {
-                  if (e.key === 'Escape' && !overlay.hidden) closeNightlyModal();
+                  if (e.key === 'Escape' && !overlay.hidden) closePreviewModal();
             });
       }
 
       function hydrateDevPreviewDownload(devPreviewRelease) {
-            const devPreviewLink = document.querySelector('#download-nightly');
-            const devPreviewVersion = document.querySelector('#download-nightly-version');
+            const devPreviewLink = document.querySelector('#download-preview');
+            const devPreviewVersion = document.querySelector('#download-preview-version');
             if (!devPreviewLink) return;
 
             if (!devPreviewRelease) {
@@ -423,7 +423,7 @@
             if (!heroButton || !versionLine) return;
 
             initDropdownToggle();
-            initNightlyModal();
+            initPreviewModal();
 
             fetchJson(LATEST_API_URL)
                   .then((stableRelease) => {
@@ -441,8 +441,8 @@
                         hydrateDevPreviewDownload(devPreview);
                   })
                   .catch(() => {
-                        const nightlyVersion = document.querySelector('#download-nightly-version');
-                        if (nightlyVersion) nightlyVersion.textContent = 'Unavailable right now.';
+                        const previewVersion = document.querySelector('#download-preview-version');
+                        if (previewVersion) previewVersion.textContent = 'Unavailable right now.';
                   });
       }
 

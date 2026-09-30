@@ -40,12 +40,12 @@ hide:
   <div class="df-download-split">
     <a class="md-button md-button--primary" id="download-now" href="https://github.com/Open-Resin-Alliance/DragonFruit/releases/latest">Download Beta</a><button class="df-download-split-toggle" id="download-dropdown-toggle" aria-label="More download options" aria-expanded="false" aria-haspopup="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"/></svg></button>
     <div class="df-download-dropdown" id="download-dropdown" hidden>
-      <a class="df-download-dropdown-item" id="download-nightly" href="https://github.com/Open-Resin-Alliance/DragonFruit/releases">
+      <a class="df-download-dropdown-item" id="download-preview" href="https://github.com/Open-Resin-Alliance/DragonFruit/releases">
         <span class="df-download-dropdown-label">Download Developer Beta</span>
-        <span class="df-download-dropdown-sub" id="download-nightly-version">Fetching…</span>
+        <span class="df-download-dropdown-sub" id="download-preview-version">Fetching…</span>
       </a>
-      <button class="df-download-dropdown-item df-show-all-nightlies" id="show-all-nightlies">
-        <span class="df-download-dropdown-label">Show Nightlies</span>
+      <button class="df-download-dropdown-item df-show-all-previews" id="show-all-previews">
+        <span class="df-download-dropdown-label">Show Previews</span>
       </button>
     </div>
   </div>
@@ -58,13 +58,13 @@ hide:
 
 </div>
 
-<div class="df-modal-overlay" id="nightly-modal-overlay" hidden>
-  <div class="df-modal" role="dialog" aria-modal="true" aria-labelledby="nightly-modal-title">
+<div class="df-modal-overlay" id="preview-modal-overlay" hidden>
+  <div class="df-modal" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
     <div class="df-modal-header">
-      <h2 id="nightly-modal-title">Nightly Builds</h2>
-      <button class="df-modal-close" id="nightly-modal-close" aria-label="Close">&times;</button>
+      <h2 id="preview-modal-title">Branch preview builds</h2>
+      <button class="df-modal-close" id="preview-modal-close" aria-label="Close">&times;</button>
     </div>
-    <div class="df-modal-body" id="nightly-modal-body">
+    <div class="df-modal-body" id="preview-modal-body">
       <p class="df-modal-loading">Loading…</p>
     </div>
   </div>

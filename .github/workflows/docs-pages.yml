@@ -82,13 +82,13 @@ jobs:
             async function fetchUpdaterJson(isPrerelease) {
               const assetName = isPrerelease ? 'latest-dev.json' : 'latest.json';
 
-              // Nightly prereleases never carry an updater feed and are deleted
+              // Preview prereleases never carry an updater feed and are deleted
               // and recreated on every build, so they always sort to the top of
               // the prerelease list and would shadow the real dev release.
               const candidates = releases.filter(r =>
                 !r.draft &&
                 r.prerelease === isPrerelease &&
-                !r.tag_name.startsWith('nightly_'));
+                !r.tag_name.startsWith('preview_'));
 
               const release = candidates.find(r => r.assets.some(a => a.name === assetName));
               if (release) {
