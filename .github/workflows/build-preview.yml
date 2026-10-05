@@ -335,57 +335,6 @@ jobs:
               ].join('\n'),
             });
 
-      - name: Sweep preview branches whose PR has closed
-        # Hangs off every preview activation rather than a schedule: cron only
-        # fires from the default branch, and nothing lands on main here for
-        # months at a time. Reacting to the close itself would mean a
-        # pull_request_target handler, which runs with write access on an event
-        # an external contributor times and stays safe only while nobody adds a
-        # checkout to it. Preview branches only ever appear when this job runs,
-        # so sweeping them when it runs keeps the set bounded.
-        if: steps.check_access.outputs.result == 'granted'
-        continue-on-error: true
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const PREFIX = 'preview/pr-';
-
-            const refs = await github.paginate(github.rest.git.listMatchingRefs, {
-              owner,
-              repo,
-              ref: `heads/${PREFIX}`,
-              per_page: 100,
-            });
-
-            for (const { ref } of refs) {
-              const branch = ref.replace('refs/heads/', '');
-              const number = Number(branch.slice(PREFIX.length));
-
-              if (!Number.isInteger(number) || number <= 0) {
-                core.warning(`Skipping ${branch}: no PR number in the name.`);
-                continue;
-              }
-
-              let pr;
-              try {
-                ({ data: pr } = await github.rest.pulls.get({
-                  owner,
-                  repo,
-                  pull_number: number,
-                }));
-              } catch (e) {
-                if (e.status !== 404) throw e;
-                core.warning(`Skipping ${branch}: PR #${number} does not exist.`);
-                continue;
-              }
-
-              if (pr.state === 'open') continue;
-
-              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
-              core.info(`Deleted ${branch}: PR #${number} is ${pr.state}.`);
-            }
-
   # ── Derive metadata (branch, tag, names) ────────────────────────────────
   derive:
     if: github.event_name == 'workflow_dispatch'
@@ -484,6 +433,7 @@ jobs:
       - name: Download macOS DMG from PR check
         uses: actions/download-artifact@v8
         with:
+          name: macos-dmg
           path: macos-artifacts
           run-id: ${{ inputs.pr_run_id }}
           github-token: ${{ github.token }}
@@ -515,6 +465,12 @@ jobs:
   # ── Build matrix ────────────────────────────────────────────────────────
   build-tauri:
     name: Build ${{ matrix.artifact_name }}
+    # The shipped profile, stated here as well as in Cargo.toml so that
+    # `swatinem/rust-cache` keys on it (see `env-vars` below): the compile check
+    # links thin and keeps its artifacts under a different key.
+    env:
+      CARGO_PROFILE_RELEASE_LTO: fat
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
     needs:
       - derive
     strategy:
@@ -551,17 +507,64 @@ jobs:
           node-version: "22.23.2"
           cache: npm
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `@stable`: the floating channel is what churns the Rust cache
+      # key (see warm-rust-cache.yml).
+      - name: Read the pinned Rust toolchain
+        id: rust_toolchain
+        # bash, not the runner's default shell: Windows would run this as pwsh,
+        # where `$(sed …)` is a module path, and the step died there.
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+
+      # `swatinem/rust-cache` hashes every toolchain `rustup` lists, not only the
+      # one the build uses, and the runner image ships its own `stable` (1.98.1
+      # when this was written). Pinning the channel alone left the key to move
+      # whenever the image moved that one; removing the rest leaves the pinned
+      # toolchain as the only Rust input to the key.
+      - name: Drop the runner's other Rust toolchains
+        shell: bash
+        env:
+          PINNED: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          rustup default "$PINNED"
+          rustup toolchain list | awk '{print $1}' | while read -r tc; do
+            case "$tc" in
+              # `system` is a rustc outside rustup, which rustup cannot remove.
+              "$PINNED"-* | system) ;;
+              *) rustup toolchain uninstall "$tc" || echo "::warning::could not uninstall $tc" ;;
+            esac
+          done
+          rustup toolchain list
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: ./src-tauri -> target
+          workspaces: |
+            ./src-tauri -> target
+            ./rust/dragonfruit-voxl-thumbnail -> target
           shared-key: tauri
+          env-vars: CARGO_PROFILE_RELEASE_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS DF_BUILD_TARGET_TRIPLE CMAKE_OSX_ARCHITECTURES
 
       - name: Install frontend dependencies
         run: npm ci
+
+      # Next asks for this on every run ("No build cache found"): its compiler and
+      # fetch caches live in `.next/cache`, and restoring that across runs is worth
+      # a minute or two of each frontend build.
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'src/**/*.tsx', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
 
       - name: Enable Windows long paths
         if: runner.os == 'Windows'
@@ -578,6 +581,11 @@ jobs:
         with:
           tauriScript: npx tauri
           args: ${{ matrix.args }}
+
+      - name: Verify Windows installer runtime payload
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-windows-bundles.ps1 -Formats nsis
 
       - name: Install Flatpak build tooling
         if: matrix.build_kind == 'flatpak'
@@ -654,7 +662,24 @@ jobs:
   # ── Fallback: build macOS Universal natively (manual dispatch, no PR check) ─
   build-macos-fallback:
     name: Build macOS Universal (fallback)
-    if: always() && github.event_name == 'workflow_dispatch' && (!inputs.pr_run_id || needs.fetch-macos-artifacts.result != 'success')
+    # The shipped profile, stated here as well as in Cargo.toml so that the cache it
+    # restores is the one the warmer wrote (see `env-vars` below); the compile check
+    # links thin and keeps its artifacts under a different key.
+    env:
+      CARGO_PROFILE_RELEASE_LTO: fat
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      # Stated at job level so `swatinem/rust-cache` sees them (see `env-vars`).
+      CMAKE_OSX_ARCHITECTURES: "arm64;x86_64"
+      DF_BUILD_TARGET_TRIPLE: universal-apple-darwin
+    # `!cancelled()`, not `always()`: `always()` keeps the job running after the
+    # workflow is cancelled, and a superseding dispatch waits in the concurrency
+    # group until this one ends. A cancelled run kept its macOS build going for 28
+    # minutes and the build that replaced it sat in the queue the whole time.
+    if: >-
+      !cancelled() &&
+      needs.derive.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      (!inputs.pr_run_id || needs.fetch-macos-artifacts.result != 'success')
     needs:
       - derive
       - fetch-macos-artifacts
@@ -679,9 +704,21 @@ jobs:
           node-version: "22.23.2"
           cache: npm
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `@stable`: the floating channel is what churns the Rust cache
+      # key (see warm-rust-cache.yml).
+      - name: Read the pinned Rust toolchain
+        id: rust_toolchain
+        # bash, not the runner's default shell: Windows would run this as pwsh,
+        # where `$(sed …)` is a module path, and the step died there.
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install Apple Certificate
@@ -690,14 +727,48 @@ jobs:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASS }}
 
+      # `swatinem/rust-cache` hashes every toolchain `rustup` lists, not only the
+      # one the build uses, and the runner image ships its own `stable` (1.98.1
+      # when this was written). Pinning the channel alone left the key to move
+      # whenever the image moved that one; removing the rest leaves the pinned
+      # toolchain as the only Rust input to the key.
+      - name: Drop the runner's other Rust toolchains
+        shell: bash
+        env:
+          PINNED: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          rustup default "$PINNED"
+          rustup toolchain list | awk '{print $1}' | while read -r tc; do
+            case "$tc" in
+              # `system` is a rustc outside rustup, which rustup cannot remove.
+              "$PINNED"-* | system) ;;
+              *) rustup toolchain uninstall "$tc" || echo "::warning::could not uninstall $tc" ;;
+            esac
+          done
+          rustup toolchain list
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: ./src-tauri -> target
+          workspaces: |
+            ./src-tauri -> target
+            ./rust/dragonfruit-voxl-thumbnail -> target
           shared-key: tauri
+          env-vars: CARGO_PROFILE_RELEASE_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS DF_BUILD_TARGET_TRIPLE CMAKE_OSX_ARCHITECTURES
 
       - name: Install frontend dependencies
         run: npm ci
+
+      # Next asks for this on every run ("No build cache found"): its compiler and
+      # fetch caches live in `.next/cache`, and restoring that across runs is worth
+      # a minute or two of each frontend build.
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'src/**/*.tsx', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
 
       - name: Build Tauri universal macOS bundle
         uses: tauri-apps/tauri-action@v0

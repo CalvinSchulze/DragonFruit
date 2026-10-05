@@ -183,7 +183,29 @@ jobs:
                 `the preview label does not auto-dispatch for forks.`);
             }
 
-            core.setOutput('should_dispatch', (hasPreviewLabel && !isFork) ? 'true' : 'false');
+            // Only a check that ran *with* the label builds the universal DMG and
+            // uploads it (see pr-check-build.yml). One that started before the label
+            // went on, which is what `/preview` on an open PR produces, is a thin
+            // arm64 check with nothing to hand over: dispatching with its run id
+            // fails the DMG download, and `/preview` has already dispatched a
+            // build of its own that this one would only cancel.
+            let hasDmg = false;
+            if (hasPreviewLabel && !isFork) {
+              const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.payload.workflow_run.id,
+                name: 'macos-dmg',
+              });
+              hasDmg = artifacts.artifacts.some((artifact) => !artifact.expired);
+              if (!hasDmg) {
+                core.notice(
+                  `PR #${pr.number} carries the preview label, but check run ` +
+                  `${context.payload.workflow_run.id} uploaded no macos-dmg artifact: not dispatching.`);
+              }
+            }
+
+            core.setOutput('should_dispatch', (hasPreviewLabel && !isFork && hasDmg) ? 'true' : 'false');
             core.setOutput('number', String(pr.number));
             core.setOutput('head_ref', pr.head.ref);
             core.setOutput('base_ref', pr.base.ref);
