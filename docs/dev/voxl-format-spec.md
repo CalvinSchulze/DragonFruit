@@ -261,7 +261,8 @@ selectable, transformable, sliceable and mesh-exportable, but the `.voxl` persis
 }
 ```
 
-`MODL` entries gain an optional `plateId` naming the owning plate.
+`MODL` entries gain an optional `plateId` naming the owning plate, or the literal
+`"off-plate"` for a model that is on no plate at all.
 
 **Geometry is world-space.** A model's `transform.position` already includes its plate's offset —
 plates are a layout property, not a parent transform. A multi-plate file therefore opens in a
@@ -281,6 +282,18 @@ recompute `offsetMm` on read — doing so destroys exactly the signal that compa
 **Supports carry no plate.** A support's plate is implied by its model via the `modelId` every
 support primitive already has. `plateId` must never be written onto a support; it would drift.
 
+**Off-plate models.** `plateId: "off-plate"` marks a model staged somewhere in world space on no
+plate — imported outside every plate's footprint, or moved clear of them. It is persisted,
+rendered and keeps its supports, but is never sliced or mesh-exported: those follow the active
+plate, and it is on none. A repack never moves it, since no plate's offset applies.
+
+The marker is a non-empty, non-uuid string rather than `null` by necessity, not taste. Both
+writers emit `plateId` behind a truthiness guard (`...(plateId ? { plateId } : {})`), so a falsy
+marker would be dropped on save and then repaired onto plate 1 on load — the model would silently
+hop onto a plate. `undefined` is equally unusable: it already means *unstamped*, the legacy case
+that must resolve to a real plate. An older reader sees `"off-plate"` as a dangling id and repairs
+the model onto plate 1, which is a valid scene rather than a loss.
+
 Legacy rule — **one implicit plate**. `plates` is absent in every file written before this
 revision. Readers (`parseVoxlBinaryV2`, `parseVoxlDocument`) normalise on load via
 `src/features/scene/voxl/plateNormalisation.ts`, guaranteeing four invariants to everything
@@ -289,8 +302,9 @@ downstream:
 - at least one plate exists — when `plates` is absent or empty, one is synthesised at
   `slotIndex: 0` with `offsetMm: {x: 0, y: 0}`;
 - `activePlateId` resolves to an existing plate, falling back to the first;
-- every model's `plateId` resolves to an existing plate — a missing or dangling id is reassigned
-  to the first plate, so **a file never loads with orphaned models**;
+- every model's `plateId` resolves to an existing plate, or is `"off-plate"` — a missing or
+  dangling id is reassigned to the first plate, so **a file never loads with orphaned models**,
+  while `"off-plate"` is preserved as the deliberate state it is;
 - `slotIndex` is unique, and a non-finite `slotIndex` or offset component is repaired.
 
 Writers omit both fields entirely when the caller supplies no plate state, so a project that never

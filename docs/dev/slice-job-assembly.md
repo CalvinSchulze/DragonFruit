@@ -97,7 +97,9 @@ const job = assembleSliceJob({
   defaults when none are stored, in place of the material profile's own exposure fields. NanoDLP has
   no such adapter and keeps the profile's values.
 - **One plate per job, in plate-local space.** A slice covers the active build plate only, so
-  callers pass `scene.models` (not `allModels`) together with that plate's `plateOffsetMm`. Model
+  callers pass `scene.models` (not `allModels`) together with that plate's `plateOffsetMm`.
+  Off-plate models (`OFF_PLATE_ID`) are excluded for free: they can never equal an
+  `activePlateId`, so every active-plate filter drops them. Model
   transforms and support geometry are world space, and `TriangleFloatCollector` is the single place
   that subtracts the offset — the slicer only ever sees coordinates relative to the plate it is
   slicing, so plate 3 is centred in the build volume exactly as plate 1 would be. The build volume

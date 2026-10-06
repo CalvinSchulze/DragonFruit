@@ -4,6 +4,7 @@ import test from 'node:test';
 import { parseVoxlBinaryV2, serializeVoxlDocumentV2 } from '../codec-v2';
 import { buildVoxlDocumentV1, parseVoxlDocument, serializeVoxlDocument } from '../codec';
 import { normaliseVoxlPlates, reassignOrphanedModelPlates } from '../plateNormalisation';
+import { OFF_PLATE_ID } from '@/features/scene/plates';
 import type {
   BuildVoxlDocumentInput,
   VoxlModelEntry,
@@ -235,4 +236,71 @@ test('normaliseVoxlPlates repairs a non-finite slotIndex and offset', () => {
 test('reassignOrphanedModelPlates returns the same array when nothing is orphaned', () => {
   const models = [{ plateId: PLATE_A.id }, { plateId: PLATE_B.id }] as VoxlModelEntry[];
   assert.equal(reassignOrphanedModelPlates(models, [PLATE_A, PLATE_B]), models);
+});
+
+// ── Off-plate models ──────────────────────────────────────────────────────
+
+test('V2 roundtrip preserves an off-plate model instead of adopting a plate', async () => {
+  const bytes = await serializeVoxlDocumentV2(
+    input({ models: [model('m1', PLATE_A.id), model('staged', OFF_PLATE_ID, 900)] }),
+    meshMap(2),
+  );
+  const { document } = parseVoxlBinaryV2(bytes);
+
+  const staged = document.models.find((entry) => entry.id === 'staged');
+  assert.equal(staged?.plateId, OFF_PLATE_ID, 'the sentinel must survive the binary round trip');
+  assert.equal(staged?.transform.position.x, 900, 'and its world position must be untouched');
+  assert.equal(document.models.find((entry) => entry.id === 'm1')?.plateId, PLATE_A.id);
+});
+
+test('the sentinel is truthy, so the truthiness-guarded writer actually emits it', async () => {
+  // Regression guard for the trap that ruled out `plateId: null`: both writers
+  // use `...(plateId ? { plateId } : {})`, so a falsy off-plate marker would be
+  // dropped on save and then repaired onto plate 1 on load.
+  const bytes = await serializeVoxlDocumentV2(
+    input({ models: [model('staged', OFF_PLATE_ID)] }),
+    meshMap(1),
+  );
+  const { document } = parseVoxlBinaryV2(bytes);
+
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(document.models[0], 'plateId'),
+    'plateId must be present on the written entry, not omitted',
+  );
+});
+
+test('V1 JSON roundtrip preserves an off-plate model', () => {
+  const doc = buildVoxlDocumentV1(input({
+    models: [{ ...v1Model('staged', OFF_PLATE_ID), transform: { position: { x: 900, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } }],
+  }));
+  const parsed = parseVoxlDocument(serializeVoxlDocument(doc, false, { compression: 'none' }));
+
+  assert.equal(parsed.models[0].plateId, OFF_PLATE_ID);
+  assert.equal(parsed.models[0].transform.position.x, 900);
+});
+
+test('normalisation keeps an off-plate model but still repairs a dangling plateId', () => {
+  const plates = [PLATE_A, PLATE_B];
+  const models = [
+    model('staged', OFF_PLATE_ID) as unknown as VoxlModelEntry,
+    model('broken', 'plate-that-never-existed') as unknown as VoxlModelEntry,
+    model('fine', PLATE_B.id) as unknown as VoxlModelEntry,
+  ];
+
+  const repaired = reassignOrphanedModelPlates(models, plates);
+
+  assert.equal(repaired[0].plateId, OFF_PLATE_ID, 'a deliberate off-plate state is not a broken link');
+  assert.equal(repaired[1].plateId, PLATE_A.id, 'a dangling uuid is still repaired to the first plate');
+  assert.equal(repaired[2].plateId, PLATE_B.id);
+});
+
+test('an unstamped model is still adopted onto a plate, never left off-plate', () => {
+  // The legacy path must not change meaning: `undefined` means "unstamped".
+  const repaired = reassignOrphanedModelPlates(
+    [model('legacy') as unknown as VoxlModelEntry],
+    [PLATE_A, PLATE_B],
+  );
+
+  assert.equal(repaired[0].plateId, PLATE_A.id);
+  assert.notEqual(repaired[0].plateId, OFF_PLATE_ID);
 });

@@ -1,5 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 
+import { isOffPlate } from '@/features/scene/plates';
+
 import type { VoxlModelEntry, VoxlPlateEntry, VoxlSceneState } from './types';
 
 /**
@@ -12,7 +14,7 @@ import type { VoxlModelEntry, VoxlPlateEntry, VoxlSceneState } from './types';
  *
  *   - `plates.length >= 1`
  *   - `activePlateId` resolves to one of them
- *   - every model's `plateId` resolves to one of them
+ *   - every model's `plateId` resolves to one of them, or is `OFF_PLATE_ID`
  *   - `slotIndex` is unique
  *
  * Offsets are deliberately *not* recomputed here. `offsetMm` records the offset
@@ -107,6 +109,11 @@ export function normaliseVoxlPlates(
  * Reassigns any model whose `plateId` is missing or dangling to the first
  * plate. Returns the same array instance when nothing needed fixing, so the
  * common path allocates nothing.
+ *
+ * `OFF_PLATE_ID` is preserved. It is a deliberate state — the model is staged
+ * in world space on no plate — not a broken link, and repairing it onto plate 1
+ * would silently move the model onto a plate the user took it off. A dangling
+ * uuid is still repaired: that one really is a broken link.
  */
 export function reassignOrphanedModelPlates(
   models: VoxlModelEntry[],
@@ -119,6 +126,7 @@ export function reassignOrphanedModelPlates(
 
   let changed = false;
   const next = models.map((model) => {
+    if (isOffPlate(model.plateId)) return model;
     if (model.plateId && known.has(model.plateId)) return model;
     changed = true;
     return { ...model, plateId: fallbackId };

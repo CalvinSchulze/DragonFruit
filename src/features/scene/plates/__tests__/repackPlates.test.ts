@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { addRoot, getSnapshot, resetStore } from '@/supports/state';
 
 import { repackPlates, type RepackableModel } from '@/features/scene/plates/repackPlates';
-import { PLATE_GAP_MM, type Plate, type PlateBuildVolume } from '@/features/scene/plates/types';
+import { OFF_PLATE_ID, PLATE_GAP_MM, type Plate, type PlateBuildVolume } from '@/features/scene/plates/types';
 
 /**
  * D6: when the build volume changes, every plate from slot 1 onwards moves,
@@ -141,4 +141,42 @@ test('a narrower build volume moves plates back toward the origin', () => {
 
   assert.equal(result.models[0].transform.position.x, SMALL_PITCH);
   assert.deepEqual(result.plates[1].offsetMm, { x: SMALL_PITCH, y: 0 });
+});
+
+test('offPlateModelsAreNeverRepacked: a staged model keeps its transform and supports', () => {
+  resetStore();
+
+  const plates = [plate('p0', 0, 0), plate('p1', 1, SMALL_PITCH)];
+  // Staged far out in world space, where no plate reaches.
+  const staged = sceneModel('staged', OFF_PLATE_ID, 900);
+  const onPlate1 = sceneModel('m1', 'p1', SMALL_PITCH);
+  seedRootAt('staged', 900, 5);
+  seedRootAt('m1', SMALL_PITCH, 5);
+
+  const result = repackPlates(plates, [staged, onPlate1], LARGE, 'p0');
+
+  // The plate-1 model moved with its plate…
+  assert.equal(result.movedModelCount, 1, 'only the plate member moves');
+  const movedModel = result.models.find((model) => model.id === 'm1');
+  assert.equal(movedModel?.transform.position.x, LARGE_PITCH);
+
+  // …while the staged model is untouched, object identity included.
+  const stagedAfter = result.models.find((model) => model.id === 'staged');
+  assert.strictEqual(stagedAfter, staged, 'an off-plate model must not even be cloned');
+  assert.equal(stagedAfter?.transform.position.x, 900);
+  assert.equal(getSnapshot().roots['root-staged'].transform.pos.x, 900, 'and its supports stay put');
+  assert.equal(getSnapshot().roots['root-m1'].transform.pos.x, LARGE_PITCH);
+});
+
+test('an off-plate model does not make a single-plate project look like it needs a repack', () => {
+  resetStore();
+
+  const plates = [plate('p0', 0, 0)];
+  const staged = sceneModel('staged', OFF_PLATE_ID, 900);
+
+  const result = repackPlates(plates, [staged], SMALL, 'p0');
+
+  assert.equal(result.movedModelCount, 0);
+  assert.deepEqual(result.movedPlateIds, []);
+  assert.strictEqual(result.models, result.models, 'no reallocation when nothing moves');
 });

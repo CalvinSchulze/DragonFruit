@@ -17,6 +17,11 @@ import type { Plate, PlateBuildVolume, PlateOffsetMm } from './types';
  * This is a consistency migration, not a user edit: callers must NOT push it
  * onto the history stack. Slot 0 is always at the origin, so a single-plate
  * project never repacks.
+ *
+ * Off-plate models are never moved. They are staged in world space and belong
+ * to no plate, so no plate's offset change applies to them. This falls out of
+ * `OFF_PLATE_ID` never being a key in `deltaByPlateId` rather than needing a
+ * guard, and `offPlateModelsAreNeverRepacked` in the tests pins it.
  */
 
 /** A model this module is allowed to move. Structural, to avoid importing the scene hook. */

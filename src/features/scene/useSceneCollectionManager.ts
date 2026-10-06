@@ -82,7 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
-import { createPlate, MAX_PLATES, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
+import { assignModelPlates, createPlate, isOffPlate, MAX_PLATES, OFF_PLATE_ID, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -310,26 +310,8 @@ function schedulePostPaint(callback: () => void): void {
 const plateStateRef: {
   current: { plates: Plate[]; activePlateId: string | null; buildVolume: PlateBuildVolume };
 } = {
-  current: { plates: [], activePlateId: null, buildVolume: { widthMm: 0, depthMm: 0 } },
+  current: { plates: [], activePlateId: null, buildVolume: { widthMm: 0, depthMm: 0, originMode: 'center' } },
 };
-
-/**
- * Stamps the active plate onto any model that does not carry one yet, so a
- * missing `plateId` can never orphan a model. Returns `models` unchanged when
- * every model is already stamped, preserving referential equality.
- */
-function stampModelsWithActivePlate(models: LoadedModel[], activePlateId: string | null): LoadedModel[] {
-  if (!activePlateId) return models;
-
-  let changed = false;
-  const stamped = models.map((model) => {
-    if (model.plateId) return model;
-    changed = true;
-    return { ...model, plateId: activePlateId };
-  });
-
-  return changed ? stamped : models;
-}
 
 function captureSceneSnapshot(
   models: LoadedModel[],
@@ -1267,7 +1249,7 @@ export function useSceneCollectionManager() {
   const [models, setModels] = useReducer(
     (previous: LoadedModel[], action: SetStateAction<LoadedModel[]>): LoadedModel[] => {
       const next = typeof action === 'function' ? action(previous) : action;
-      return stampModelsWithActivePlate(next, plateStateRef.current.activePlateId);
+      return assignModelPlates(next, previous, plateStateRef.current);
     },
     EMPTY_MODELS,
   );
@@ -1689,11 +1671,19 @@ export function useSceneCollectionManager() {
   const [activePlateId, setActivePlateId] = useState<string>(() => plates[0].id);
   plateStateRef.current.plates = plates;
   plateStateRef.current.activePlateId = activePlateId;
-  plateStateRef.current.buildVolume = { widthMm: view3dSettings.widthMm, depthMm: view3dSettings.depthMm };
+  plateStateRef.current.buildVolume = { widthMm: view3dSettings.widthMm, depthMm: view3dSettings.depthMm, originMode: view3dSettings.originMode };
 
   const activePlateModels = useMemo(
     () => models.filter((model) => resolveModelPlateId(model, activePlateId) === activePlateId),
     [activePlateId, models],
+  );
+
+  // Models staged in world space on no plate. Persisted, rendered and keeping
+  // their supports, but never sliced or mesh-exported — those follow the active
+  // plate, and these are on none.
+  const offPlateModels = useMemo(
+    () => models.filter((model) => isOffPlate(model.plateId)),
+    [models],
   );
 
   // The active plate's *recorded* offset, not the derived one: it is what the
@@ -1703,6 +1693,25 @@ export function useSceneCollectionManager() {
     const active = plates.find((plate) => plate.id === activePlateId);
     return active ? active.offsetMm : { x: 0, y: 0 };
   }, [activePlateId, plates]);
+
+  /**
+   * Takes models off their plate explicitly, staging them in world space.
+   *
+   * Only records the decision — it does not move anything. Since plate
+   * membership is re-derived from geometry on the next committed move, a model
+   * left sitting over a plate would be re-adopted by that move; the caller is
+   * expected to pair this with a transform that puts the model clear of every
+   * plate. Exposed now so the plate UI can call it; nothing in the app does yet.
+   */
+  const setModelsOffPlate = useCallback((ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    const targetIds = new Set(ids);
+    setModels((previous) => previous.map((model) => (
+      targetIds.has(model.id) && !isOffPlate(model.plateId)
+        ? { ...model, plateId: OFF_PLATE_ID }
+        : model
+    )));
+  }, []);
 
   // Dev-only invariant checks — see multi-volume-refactor.md §3. Plate state is
   // reachable from history restore and scene load, so the assertions are cheap
@@ -1722,7 +1731,20 @@ export function useSceneCollectionManager() {
     if (new Set(plates.map((plate) => plate.slotIndex)).size !== plates.length) {
       console.error('[plates] invariant violated: slotIndex is not unique across plates');
     }
-  }, [activePlateId, plates]);
+    // Every model resolves to an existing plate, or is explicitly off-plate.
+    // Anything else is a dangling link the assignment step should have closed.
+    const knownPlateIds = new Set(plates.map((plate) => plate.id));
+    const dangling = models.filter((model) => {
+      const resolved = resolveModelPlateId(model, activePlateId);
+      return !isOffPlate(resolved) && !knownPlateIds.has(resolved);
+    });
+    if (dangling.length > 0) {
+      console.error(
+        '[plates] invariant violated: model(s) reference no existing plate and are not off-plate',
+        dangling.map((model) => ({ id: model.id, plateId: model.plateId })),
+      );
+    }
+  }, [activePlateId, models, plates]);
 
   useEffect(() => {
     const persistedAppearance = readMeshAppearanceFromLocalStorage();
@@ -5592,6 +5614,13 @@ export function useSceneCollectionManager() {
           const activeId = plateStateRef.current.activePlateId ?? adoptedPlates[0].id;
           const repacked = repackPlates(adoptedPlates, importedModels, buildVolume, activeId);
 
+          // The mirror has to hold the repacked plates *before* `setModels`
+          // runs: its reducer re-derives plate membership for any model whose
+          // transform changed, and the pre-repack offsets would place the
+          // moved models in the gap between plates.
+          plateStateRef.current.plates = repacked.plates;
+          setPlates(repacked.plates);
+
           if (repacked.movedModelCount > 0) {
             const transformsById = new Map(repacked.models.map((model) => [model.id, model.transform]));
             setModels((prev) => prev.map((model) => {
@@ -5599,9 +5628,6 @@ export function useSceneCollectionManager() {
               return nextTransform ? { ...model, transform: nextTransform } : model;
             }));
           }
-
-          plateStateRef.current.plates = repacked.plates;
-          setPlates(repacked.plates);
 
           console.info(
             `[SceneCollection] Repacked ${repacked.movedPlateIds.length} plate(s) for the current build volume; `
@@ -6142,6 +6168,8 @@ export function useSceneCollectionManager() {
     plates,
     activePlateId,
     activePlateOffsetMm,
+    offPlateModels,
+    setModelsOffPlate,
     activeModelId,
     setActiveModelId,
     selectedModelIds,
