@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useState, useCallback, useEffect, useMemo, useReducer, useRef, useSyncExternalStore, type SetStateAction } from 'react';
 import { useLingui } from '@lingui/react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -82,6 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
+import { createPlate, MAX_PLATES, resolveModelPlateId, type Plate } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -150,6 +151,8 @@ export const SCENE_MODELS_SNAPSHOT_APPLY = 'scene_models_snapshot_apply' as cons
 // would strand the stack. Exported so the push site keys off the same constant.
 export const SCENE_SLICED = 'SCENE_SLICED' as const;
 const SCENE_HISTORY_MAX_SNAPSHOTS = 200;
+/** Stable empty initial value for the models reducer. */
+const EMPTY_MODELS: LoadedModel[] = [];
 // Belt-and-suspenders alongside the count cap above: a handful of
 // full-resolution geometry swaps (e.g. repeated hollowing on a large model)
 // can retain far more memory per snapshot than typical small edits, so the
@@ -174,6 +177,8 @@ type SceneSnapshot = {
   models: LoadedModel[];
   activeModelId: string | null;
   selectedModelIds: string[];
+  plates: Plate[];
+  activePlateId: string | null;
   supportState?: SupportState;
   modifierRecord?: { modelId: string; modifiers: ModelMeshModifiers | undefined };
 };
@@ -181,6 +186,10 @@ type SceneSnapshot = {
 type SceneSnapshotCaptureOptions = {
   includeSupportState?: boolean;
   supportStateOverride?: SupportState;
+  /** Use when the caller has already computed the *next* plate state. */
+  platesOverride?: Plate[];
+  /** Use when the caller has already computed the *next* active plate. */
+  activePlateIdOverride?: string | null;
 };
 
 type TransformHistorySupportSnapshotOptions = {
@@ -212,6 +221,10 @@ function transformsEqual(a: ModelTransform, b: ModelTransform): boolean {
     && Math.abs(a.rotation.y - b.rotation.y) <= EPSILON
     && Math.abs(a.rotation.z - b.rotation.z) <= EPSILON
     && a.scale.distanceToSquared(b.scale) <= EPSILON;
+}
+
+function clonePlate(plate: Plate): Plate {
+  return { ...plate, offsetMm: { ...plate.offsetMm } };
 }
 
 function cloneLoadedModel(model: LoadedModel): LoadedModel {
@@ -285,6 +298,37 @@ function schedulePostPaint(callback: () => void): void {
 
 // ─────────────────────────────────────────────────────────────────────────
 
+// ── Plate State Mirror ───────────────────────────────────────────────────
+//
+// `plates` / `activePlateId` live in React state inside the hook, but the
+// module-level `captureSceneSnapshot` and the `setModels` reducer need the
+// current value without threading it through every call site. This mirror is
+// refreshed on every render of the hook, the same way support state is read
+// from its module-level singleton. Callers that have already computed a *next*
+// plate state pass `platesOverride` / `activePlateIdOverride` instead —
+// mirroring how `supportStateOverride` handles the same staleness.
+const plateStateRef: { current: { plates: Plate[]; activePlateId: string | null } } = {
+  current: { plates: [], activePlateId: null },
+};
+
+/**
+ * Stamps the active plate onto any model that does not carry one yet, so a
+ * missing `plateId` can never orphan a model. Returns `models` unchanged when
+ * every model is already stamped, preserving referential equality.
+ */
+function stampModelsWithActivePlate(models: LoadedModel[], activePlateId: string | null): LoadedModel[] {
+  if (!activePlateId) return models;
+
+  let changed = false;
+  const stamped = models.map((model) => {
+    if (model.plateId) return model;
+    changed = true;
+    return { ...model, plateId: activePlateId };
+  });
+
+  return changed ? stamped : models;
+}
+
 function captureSceneSnapshot(
   models: LoadedModel[],
   activeModelId: string | null,
@@ -293,11 +337,17 @@ function captureSceneSnapshot(
 ): SceneSnapshot {
   const includeSupportState = options?.includeSupportState ?? false;
   const supportStateOverride = options?.supportStateOverride;
+  const plates = options?.platesOverride ?? plateStateRef.current.plates;
+  const activePlateId = options?.activePlateIdOverride !== undefined
+    ? options.activePlateIdOverride
+    : plateStateRef.current.activePlateId;
 
   return {
     models: models.map(cloneLoadedModel),
     activeModelId,
     selectedModelIds: [...selectedModelIds],
+    plates: plates.map(clonePlate),
+    activePlateId,
     ...(includeSupportState
       ? {
           supportState: clonePlainData(supportStateOverride ?? getSnapshot()),
@@ -939,6 +989,13 @@ export interface LoadedModel {
   originalRef?: VoxlMeshRef;
   fileSizeBytes?: number;
   geometry: GeometryWithBounds;
+  /**
+   * Owning build plate. Optional only so existing construction sites compile —
+   * reads must go through `resolveModelPlateId`, and `setModels` stamps the
+   * active plate onto anything that arrives without one.
+   */
+  plateId?: string;
+  /** World-space transform; already includes the owning plate's offset. */
   transform: ModelTransform;
   visible: boolean;
   color: string;
@@ -1202,7 +1259,16 @@ export function useSceneCollectionManager() {
     [],
   );
 
-  const [models, setModels] = useState<LoadedModel[]>([]);
+  // Behaves exactly like `useState<LoadedModel[]>([])` — `useReducer` is used
+  // only so every write funnels through the plate-stamping step below while
+  // keeping the dispatcher's identity stable for the existing call sites.
+  const [models, setModels] = useReducer(
+    (previous: LoadedModel[], action: SetStateAction<LoadedModel[]>): LoadedModel[] => {
+      const next = typeof action === 'function' ? action(previous) : action;
+      return stampModelsWithActivePlate(next, plateStateRef.current.activePlateId);
+    },
+    EMPTY_MODELS,
+  );
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const modelsRef = useRef<LoadedModel[]>([]);
@@ -1610,6 +1676,43 @@ export function useSceneCollectionManager() {
     });
   }, [activePrinterProfile, storedView3dSettings]);
 
+  // ── Build plates ───────────────────────────────────────────────────────
+  //
+  // A project owns N plates with exactly one active; models carry `plateId` and
+  // their transforms stay in world space (plate offset included). Only one
+  // plate is ever created today — see MAX_PLATES.
+  const [plates, setPlates] = useState<Plate[]>(() => [
+    createPlate(0, { widthMm: view3dSettings.widthMm, depthMm: view3dSettings.depthMm }),
+  ]);
+  const [activePlateId, setActivePlateId] = useState<string>(() => plates[0].id);
+  plateStateRef.current.plates = plates;
+  plateStateRef.current.activePlateId = activePlateId;
+
+  const activePlateModels = useMemo(
+    () => models.filter((model) => resolveModelPlateId(model, activePlateId) === activePlateId),
+    [activePlateId, models],
+  );
+
+  // Dev-only invariant checks — see multi-volume-refactor.md §3. Plate state is
+  // reachable from history restore and scene load, so the assertions are cheap
+  // insurance against a silently broken scene.
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+
+    if (plates.length < 1) {
+      console.error('[plates] invariant violated: a project must always have at least one plate');
+    }
+    if (plates.length > MAX_PLATES) {
+      console.error(`[plates] invariant violated: ${plates.length} plates exceeds the cap of ${MAX_PLATES}`);
+    }
+    if (!plates.some((plate) => plate.id === activePlateId)) {
+      console.error('[plates] invariant violated: activePlateId resolves to no plate', activePlateId);
+    }
+    if (new Set(plates.map((plate) => plate.slotIndex)).size !== plates.length) {
+      console.error('[plates] invariant violated: slotIndex is not unique across plates');
+    }
+  }, [activePlateId, plates]);
+
   useEffect(() => {
     const persistedAppearance = readMeshAppearanceFromLocalStorage();
     if (persistedAppearance) {
@@ -1914,6 +2017,20 @@ export function useSceneCollectionManager() {
   }, [buildMeshPlacementOffsets, defaultImportCenterXY.x, defaultImportCenterXY.y, estimateSupportBoundsForModel, intersectsRect, isRectInsidePlate, view3dSettings.depthMm, view3dSettings.originMode, view3dSettings.widthMm]);
 
   const applySceneSnapshot = useCallback((snapshot: SceneSnapshot) => {
+    // Restore plates first: the models reducer stamps missing plate ids from
+    // the mirror, which must already hold the snapshot's active plate.
+    if (snapshot.plates && snapshot.plates.length > 0) {
+      const restoredPlates = snapshot.plates.map(clonePlate);
+      const restoredActivePlateId = restoredPlates.some((plate) => plate.id === snapshot.activePlateId)
+        ? (snapshot.activePlateId as string)
+        : restoredPlates[0].id;
+
+      plateStateRef.current.plates = restoredPlates;
+      plateStateRef.current.activePlateId = restoredActivePlateId;
+      setPlates(restoredPlates);
+      setActivePlateId(restoredActivePlateId);
+    }
+
     if (snapshot.modifierRecord) {
       storeModelMeshModifiers(snapshot.modifierRecord.modelId, cloneMeshModifiersForHistory(snapshot.modifierRecord.modifiers));
       clearPreparedGeometryCacheForModel(snapshot.modifierRecord.modelId);
@@ -5902,12 +6019,12 @@ export function useSceneCollectionManager() {
 
   // Calculate global scene bounds for slicing/camera
   const sceneBounds = useMemo(() => {
-    if (models.length === 0) return null;
+    if (activePlateModels.length === 0) return null;
 
     const unionBox = new THREE.Box3();
     let hasVisible = false;
 
-    for (const model of models) {
+    for (const model of activePlateModels) {
       if (!model.visible) continue;
 
       // Clone bbox to not mutate original
@@ -5937,10 +6054,17 @@ export function useSceneCollectionManager() {
     }
 
     return hasVisible ? unionBox : null;
-  }, [models]);
+  }, [activePlateModels]);
 
   return {
-    models,
+    // `models` is the active plate's models — every consumer that edits,
+    // selects, slices or exports the current scene wants exactly this. The few
+    // consumers that need every plate's models (project save, autosave,
+    // multi-plate rendering, duplicate-name generation) use `allModels`.
+    models: activePlateModels,
+    allModels: models,
+    plates,
+    activePlateId,
     activeModelId,
     setActiveModelId,
     selectedModelIds,
