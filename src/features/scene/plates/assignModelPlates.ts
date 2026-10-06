@@ -107,11 +107,24 @@ export function assignModelPlates<TModel extends PlateAssignableModel>(
     if (!before || transformsEqual(before.transform, model.transform)) return model;
 
     const currentPlateId = resolveModelPlateId(model, activePlateId);
+
+    // A model on some *other* plate is inert in the viewport; the only thing
+    // that moves it is a repack, which must not cost it its plate. Its
+    // membership is not up for re-derivation.
+    if (currentPlateId !== activePlateId && !isOffPlate(currentPlateId)) return model;
+
+    // Cross-plate drag is out of scope for v1, so a committed move only ever
+    // moves a model between the active plate and off-plate. Classifying
+    // against every plate would let a drag drop a model onto an inactive
+    // plate, where it is inert — and with no plate switching yet, stranded.
+    const activePlate = plates.find((plate) => plate.id === activePlateId);
+    if (!activePlate) return model;
+
     const nextPlateId = classifyModelPlate(
       modelFootprintRect(model),
-      plates,
+      [activePlate],
       buildVolume,
-      isOffPlate(currentPlateId) ? null : currentPlateId,
+      activePlateId,
     );
     if (nextPlateId === currentPlateId) return model;
 

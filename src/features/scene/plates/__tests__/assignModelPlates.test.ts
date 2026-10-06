@@ -126,3 +126,30 @@ test('with no plates yet, assignment is a no-op rather than a guess', () => {
   const models = [model('m1', 0)];
   assert.strictEqual(assignModelPlates(models, [], { plates: [], activePlateId: null, buildVolume: BUILD_VOLUME }), models);
 });
+
+test('a drag that lands on an inactive plate stages the model rather than handing it over', () => {
+  // Cross-plate drag is out of scope for v1. Handing the model to plate 2 would
+  // make it inert the instant it landed, and with no plate switching yet the
+  // user could not get it back.
+  const plates = [createPlate(0, BUILD_VOLUME), createPlate(1, BUILD_VOLUME)];
+  const pitch = BUILD_VOLUME.widthMm + 20;
+  const before = model('m1', 0, plates[0].id);
+
+  const assigned = assignModelPlates([model('m1', pitch, plates[0].id)], [before], plateState(plates));
+
+  assert.equal(assigned[0].plateId, OFF_PLATE_ID, 'dragged off the active plate, so staged');
+  assert.notEqual(assigned[0].plateId, plates[1].id, 'never silently adopted by the plate it overlaps');
+});
+
+test("a model on another plate keeps its plate when something moves it", () => {
+  // The only thing that moves an inert model is a repack, which must not cost
+  // it its plate.
+  const plates = [createPlate(0, BUILD_VOLUME), createPlate(1, BUILD_VOLUME)];
+  const pitch = BUILD_VOLUME.widthMm + 20;
+  const before = model('m1', pitch, plates[1].id);
+
+  const assigned = assignModelPlates([model('m1', pitch + 40, plates[1].id)], [before], plateState(plates));
+
+  assert.equal(assigned[0].plateId, plates[1].id);
+  assert.strictEqual(assigned[0], assigned[0], 'untouched');
+});

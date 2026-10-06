@@ -1023,13 +1023,28 @@ export function SceneCanvas({
     [allModelsProp, models],
   );
 
+  /**
+   * Models the user can act on: the active plate's, plus off-plate ones.
+   *
+   * Off-plate models are staged in world space with no plate to switch to, so
+   * selecting and dragging them back onto a plate is the only way to recover
+   * them — which means every lookup the interaction paths do has to find them.
+   * Models on *other* plates are deliberately absent: they are inert until
+   * their plate is active. Returns `models` unchanged when nothing is staged,
+   * so a scene without off-plate models keeps the identity it always had.
+   */
+  const interactiveModels = React.useMemo<LoadedModel[]>(() => {
+    const offPlate = allModelsForRender.filter((model) => isOffPlate(model.plateId));
+    return offPlate.length > 0 ? [...models, ...offPlate] : models;
+  }, [allModelsForRender, models]);
+
   const modelById = React.useMemo(() => {
     const map = new Map<string, LoadedModel>();
-    for (const model of models) {
+    for (const model of interactiveModels) {
       map.set(model.id, model);
     }
     return map;
-  }, [models]);
+  }, [interactiveModels]);
 
   React.useEffect(() => {
     const modelIdSet = new Set(models.map((model) => model.id));
