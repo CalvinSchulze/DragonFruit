@@ -180,7 +180,9 @@ fn build_row_spans_matched(
     let mut pairs: Vec<(f32, f32)> = Vec::with_capacity(active_edges.len() / 2 + 1);
     let mut orphans: Vec<(f32, i32)> = Vec::new();
 
-    for edge in active_edges {
+    let mut edge_index = 0usize;
+    while edge_index < active_edges.len() {
+        let edge = active_edges[edge_index];
         if !edge.x.is_finite() {
             break;
         }
@@ -188,6 +190,25 @@ fn build_row_spans_matched(
         // Normalize so w > 0 opens fill and w < 0 closes it, regardless of
         // the mesh's dominant orientation.
         let mut w = edge.wind * entry_wind;
+        if w == -1 && open.is_empty() {
+            // A nearby entry belongs to this unmatched exit when its next
+            // possible closing exit is farther away. Consume that local gap
+            // instead of carrying the entry into another model instance.
+            let next_entry = active_edges.get(edge_index + 1).filter(|next| {
+                next.x.is_finite() && next.wind * entry_wind == 1 && next.x > edge.x
+            });
+            if let Some(next_entry) = next_entry {
+                let next_exit = active_edges[edge_index + 2..].iter().find(|candidate| {
+                    candidate.x.is_finite() && candidate.wind * entry_wind < 0
+                });
+                if next_exit.is_some_and(|next_exit| {
+                    next_entry.x - edge.x < next_exit.x - next_entry.x
+                }) {
+                    edge_index += 2;
+                    continue;
+                }
+            }
+        }
         while w > 0 {
             open.push(edge.x);
             w -= 1;
@@ -203,6 +224,7 @@ fn build_row_spans_matched(
                 None => orphans.push((edge.x, -1)),
             }
         }
+        edge_index += 1;
     }
     for &x in &open {
         orphans.push((x, 1));
@@ -351,12 +373,47 @@ fn spans_total_px(spans: &[RowSpan]) -> u64 {
     spans.iter().map(|s| (s.end - s.start + 1) as u64).sum()
 }
 
+fn collapse_subpixel_pairs(active_edges: &[ActiveEdge]) -> Option<Vec<ActiveEdge>> {
+    let has_subpixel_pair = active_edges.windows(2).any(|pair| {
+        pair[0].x.is_finite()
+            && pair[1].x.is_finite()
+            && pair[0].wind + pair[1].wind == 0
+            && pair[1].x - pair[0].x < 1.0
+    });
+    if !has_subpixel_pair {
+        return None;
+    }
+
+    let mut collapsed = Vec::with_capacity(active_edges.len());
+    for &edge in active_edges {
+        let cancels_previous = collapsed.last().is_some_and(|previous: &ActiveEdge| {
+            previous.x.is_finite()
+                && edge.x.is_finite()
+                && previous.wind + edge.wind == 0
+                && edge.x - previous.x < 1.0
+        });
+        if cancels_previous {
+            collapsed.pop();
+        } else {
+            collapsed.push(edge);
+        }
+    }
+
+    Some(collapsed)
+}
+
 fn build_row_spans_nonzero_inner(
     active_edges: &[ActiveEdge],
     width: usize,
     snap_to_integer: bool,
     prev_spans: Option<&[RowSpan]>,
 ) -> (Vec<RowSpan>, bool) {
+    // Opposite crossings below the source raster's X resolution have zero
+    // printable extent. Remove them before winding repair so one crossing
+    // cannot be matched against another instance across the plate.
+    let collapsed_edges = collapse_subpixel_pairs(active_edges);
+    let active_edges = collapsed_edges.as_deref().unwrap_or(active_edges);
+
     let mut spans = Vec::with_capacity(active_edges.len() / 2 + 1);
     let mut winding = 0i32;
     let n = active_edges.len();
@@ -1267,23 +1324,19 @@ fn apply_edge_box_blur_to_mask_in_roi(
     }
 
     // ── Parallel H→V path (large ROIs, release builds) ───────────────────
-    // Thread-local buffer eliminates the ~41 MB per-call heap allocation.
-    // Capacity is retained across calls so only the first call per thread pays
-    // for OS page mapping; subsequent calls are essentially free.
-    //
-    // SAFETY invariant: every element of hpass is written by the H-pass
-    // before the V-pass reads it, so set_len on uninitialized capacity is fine.
+    // Reuse a buffer per thread, but take ownership before Rayon can run another
+    // blur on this worker. A reentrant blur must not overwrite the live H-pass.
+    // SAFETY invariant: H-pass writes every element before V-pass reads it.
     thread_local! {
-        static HPASS: std::cell::UnsafeCell<Vec<u16>> = std::cell::UnsafeCell::new(Vec::new());
+        static HPASS: std::cell::RefCell<Vec<u16>> = std::cell::RefCell::new(Vec::new());
     }
 
     let mask_read = mask.as_ptr() as usize;
     let mask_ptr = mask.as_mut_ptr() as usize;
 
-    HPASS.with(|cell| {
+    {
+        let mut hpass = HPASS.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
         let needed = roi_w * roi_h;
-        // SAFETY: thread_local — only the owning thread accesses this cell.
-        let hpass: &mut Vec<u16> = unsafe { &mut *cell.get() };
         if hpass.capacity() < needed {
             hpass.reserve(needed - hpass.len());
         }
@@ -1319,6 +1372,10 @@ fn apply_edge_box_blur_to_mask_in_roi(
             });
 
         let hpass_ptr = hpass.as_ptr() as usize;
+        // Let a queued nested blur run here so the regression test exercises the
+        // reentrant case deterministically; compiled out in non-test builds.
+        #[cfg(test)]
+        rayon::yield_now();
 
         // V-pass: parallel over columns.
         // Safety: each parallel task writes to a distinct column of `mask`;
@@ -1356,7 +1413,13 @@ fn apply_edge_box_blur_to_mask_in_roi(
                 }
             }
         });
-    }); // end HPASS.with
+        HPASS.with(|cell| {
+            let mut cached = cell.borrow_mut();
+            if cached.capacity() < hpass.capacity() {
+                *cached = hpass;
+            }
+        });
+    }
 }
 
 fn gaussian_blur_weights(radius: usize, sigma: f64) -> Vec<u32> {
@@ -4586,6 +4649,120 @@ mod tests {
     }
 
     #[test]
+    fn repeated_subpixel_gap_pairs_do_not_bridge_in_any_raster_mode() {
+        let prev = build_row_spans_nonzero(
+            &[
+                edge(10.0, 1),
+                edge(20.0, -1),
+                edge(30.0, 1),
+                edge(40.0, -1),
+                edge(110.0, 1),
+                edge(120.0, -1),
+                edge(130.0, 1),
+                edge(140.0, -1),
+                edge(210.0, 1),
+                edge(220.0, -1),
+                edge(230.0, 1),
+                edge(240.0, -1),
+            ],
+            300,
+            true,
+        );
+        let defective = [
+            edge(10.0, 1),
+            edge(20.0, -1),
+            edge(30.0, 1),
+            edge(40.0, -1),
+            edge(50.0, -1),
+            edge(50.02, 1),
+            edge(110.0, 1),
+            edge(120.0, -1),
+            edge(130.0, 1),
+            edge(140.0, -1),
+            edge(150.0, -1),
+            edge(150.02, 1),
+            edge(210.0, 1),
+            edge(220.0, -1),
+            edge(230.0, 1),
+            edge(240.0, -1),
+            edge(250.0, -1),
+            edge(250.02, 1),
+        ];
+
+        for snap_to_integer in [true, false] {
+            let spans = super::build_row_spans_nonzero_ctx(
+                &defective,
+                300,
+                snap_to_integer,
+                Some(&prev),
+            );
+
+            assert_eq!(spans.len(), 6);
+            assert!(
+                spans.iter().all(|span| span.b - span.a <= 10.0),
+                "subpixel gaps must not bridge repeated instances: {spans:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_local_gap_signatures_do_not_bridge_between_instances() {
+        let mut prev_edges = Vec::new();
+        let mut edges = Vec::new();
+        for offset in [0.0, 100.0, 200.0] {
+            prev_edges.extend_from_slice(&[
+                edge(offset + 10.0, 1),
+                edge(offset + 20.0, -1),
+                edge(offset + 30.0, 1),
+                edge(offset + 40.0, -1),
+            ]);
+            edges.extend_from_slice(&[
+                edge(offset + 10.0, 1),
+                edge(offset + 20.0, -1),
+                edge(offset + 30.0, 1),
+                edge(offset + 40.0, -1),
+                edge(offset + 50.0, -1),
+                edge(offset + 55.0, 1),
+            ]);
+        }
+        let prev = build_row_spans_nonzero(&prev_edges, 300, true);
+
+        for snap_to_integer in [true, false] {
+            let spans = super::build_row_spans_nonzero_ctx(
+                &edges,
+                300,
+                snap_to_integer,
+                Some(&prev),
+            );
+            assert_eq!(spans.len(), 6);
+            assert!(
+                spans.iter().all(|span| span.b - span.a <= 10.0),
+                "local gap signatures must not bridge repeated instances: {spans:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unmatched_exit_does_not_consume_the_next_real_object() {
+        let spans = build_row_spans_nonzero(
+            &[edge(10.0, -1), edge(100.0, 1), edge(130.0, -1)],
+            256,
+            true,
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].start, spans[0].end), (100, 129));
+    }
+
+    #[test]
+    fn complete_subpixel_features_are_dropped_in_all_raster_modes() {
+        let edges = [edge(10.1, 1), edge(10.9, -1)];
+
+        assert!(build_row_spans_nonzero(&edges, 256, true).is_empty());
+        assert!(build_row_spans_nonzero(&edges, 256, false).is_empty());
+    }
+
+    #[test]
     fn same_sign_walls_still_fill_via_orphan_pairing() {
         // Partially inverted meshes produce same-sign crossings for both
         // walls of a solid; orientation carries no pairing information
@@ -4864,6 +5041,34 @@ mod tests {
                 < 1e-6,
             "total area should equal the sum of component areas in AA RLE path"
         );
+    }
+
+    #[test]
+    fn parallel_box_blurs_on_one_worker_keep_separate_intermediates() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let width = 1024;
+        let height = 1024;
+        let mut lit = vec![255u8; width * height];
+        let mut dark = vec![0u8; width * height];
+
+        pool.install(|| {
+            rayon::scope_fifo(|scope| {
+                scope.spawn_fifo(|_| {
+                    super::apply_edge_box_blur_to_mask_in_roi(
+                        &mut dark, width, height, 1, 0, 0, width - 1, 0, height - 1,
+                    );
+                });
+                super::apply_edge_box_blur_to_mask_in_roi(
+                    &mut lit, width, height, 1, 0, 0, width - 1, 0, height - 1,
+                );
+            });
+        });
+
+        assert!(lit.iter().all(|&pixel| pixel == 255));
+        assert!(dark.iter().all(|&pixel| pixel == 0));
     }
 
     #[test]

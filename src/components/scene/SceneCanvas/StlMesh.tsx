@@ -18,11 +18,18 @@ import {
   ensureMeshSmoothingEngineReady,
 } from '@/features/mesh-smoothing/meshSmoothingEngine';
 import { clampMeshSmoothingBrushSizeMm, getMeshSmoothingSettings } from '@/features/mesh-smoothing/settings';
+import {
+  paintSupportBlockers,
+  beginSupportBlockerStroke,
+  setSupportBlockerHover,
+} from '@/supports/autoSupport/supportBlockers';
 import type { TransformMode, ModelTransform } from '@/hooks/useModelTransform';
 import type { SupportMode } from '@/supports/types';
 import { quaternionFromGlobalEuler } from '@/utils/rotation';
 import { emitImmediateModelHover } from '@/supports/interaction/pointerOcclusion';
 import { MARQUEE_CANDIDATE_TINT_FACTOR } from '@/utils/marqueeCandidateTint';
+import { getSupportPlacementGuideZ } from './supportPlacementGuideStore';
+import { BAKED_OCCLUSION_ATTRIBUTE, bakedOcclusionStrength } from '@/features/scene/bakedOcclusion';
 
 // Scratch raycaster reused for clip-zone fallback raycasts.
 const _clipFallbackRaycaster = new THREE.Raycaster();
@@ -169,10 +176,10 @@ function StlMeshComponent({
   meshRef,
   actualMeshRef,
   materialRoughness,
+  bakedAoIntensity = 1,
   shaderType,
   matcapVariant,
   flatUseVertexColors,
-  toonSteps,
   xrayOpacity,
   heatmapMinAngle,
   heatmapMaxAngle,
@@ -195,9 +202,6 @@ function StlMeshComponent({
   modelId,
   isSelected,
   isMarqueeCandidate,
-  isBranchPlacementActive,
-  isLeafPlacementActive,
-  isBracePlacementActive,
   onModelHoverPointChange,
   onModelHoverModelChange,
   revealGhostOpacity,
@@ -210,7 +214,7 @@ function StlMeshComponent({
   outOfBoundsMin,
   outOfBoundsMax,
   outOfBoundsStripeColor,
-  supportPlacementGuidePlaneZ,
+  supportPlacementGuideEnabled,
   supportPlacementGuideColor,
   supportPlacementGuideLineWidthMm,
   supportPlacementGuideOpacity,
@@ -225,6 +229,7 @@ function StlMeshComponent({
   blockerEditMode = false,
   interiorView = false,
   cavityGeometry,
+  bakedAoVersion,
   children,
 }: {
   geometry: THREE.BufferGeometry;
@@ -236,23 +241,28 @@ function StlMeshComponent({
   /** Ref to the actual mesh (for outline effect) */
   actualMeshRef?: React.Ref<THREE.Mesh | null>;
   materialRoughness?: number;
+  /** Multiplier on the baked occlusion's strength; 0 means the bake is off. */
+  bakedAoIntensity?: number;
   shaderType: MeshShaderType;
   matcapVariant?: import('@/features/shaders/mesh').MatcapVariant;
   flatUseVertexColors?: boolean;
-  toonSteps?: number;
   xrayOpacity?: number;
   heatmapMinAngle?: number;
   heatmapMaxAngle?: number;
   heatmapColors?: string[];
   /** When true, overlays black edge lines on model geometry for better shape definition. */
   higherContrastModelEdges?: boolean;
-  /** Pre-computed hard-edge geometry for Higher Contrast Model Edges overlay. */
+  /** Hard-edge geometry for the overlay, built when the setting is on. */
   edgeGeometry?: THREE.EdgesGeometry | null;
   /** When true, suppresses the edge overlay (e.g. during voxel blocker editing). */
   blockerEditMode?: boolean;
   interiorView?: boolean;
   /** Interior cavity mesh to render as solid in Interior View Mode. */
   cavityGeometry?: THREE.BufferGeometry | null;
+  /** Bumped by the background bake when `aBakedAo` lands on `geometry`. The
+   *  geometry keeps its identity, so this prop — not the geometry — is what
+   *  re-runs the attribute detection below. */
+  bakedAoVersion?: number;
   transform?: ModelTransform | null;
   mode?: SupportMode;
   transformMode?: TransformMode;
@@ -276,11 +286,6 @@ function StlMeshComponent({
   isSelected?: boolean;
   /** Whether model is currently inside marquee drag window */
   isMarqueeCandidate?: boolean;
-  /** Whether branch placement mode is active (Alt held) */
-  isBranchPlacementActive?: boolean;
-  /** Whether leaf placement mode is active (Alt+Shift held) */
-  isLeafPlacementActive?: boolean;
-  isBracePlacementActive?: boolean;
   onModelHoverPointChange?: (point: THREE.Vector3 | null) => void;
   onModelHoverModelChange?: (modelId: string | null) => void;
   revealGhostOpacity?: number;
@@ -294,7 +299,8 @@ function StlMeshComponent({
   outOfBoundsMin?: THREE.Vector3 | null;
   outOfBoundsMax?: THREE.Vector3 | null;
   outOfBoundsStripeColor?: string;
-  supportPlacementGuidePlaneZ?: number | null;
+  /** Mounts the placement guide overlay; hover and drag enter/leave only, never per move. */
+  supportPlacementGuideEnabled?: boolean;
   supportPlacementGuideColor?: string;
   supportPlacementGuideLineWidthMm?: number;
   supportPlacementGuideOpacity?: number;
@@ -393,13 +399,27 @@ function StlMeshComponent({
     );
   }, [geometry]);
 
+  // Baked per-vertex occlusion (see docs/dev/backlog.md). The bake attaches the
+  // attribute in the background, so a model can gain it while mounted —
+  // `bakedAoVersion` is what re-runs this memo, because the geometry object
+  // itself keeps its identity.
+  const bakedAoStrength = React.useMemo(() => {
+    const occlusion = geometry.getAttribute(BAKED_OCCLUSION_ATTRIBUTE);
+    void bakedAoVersion;
+    return occlusion && occlusion.count === geometry.getAttribute('position').count
+      ? bakedOcclusionStrength(bakedAoIntensity)
+      : 0;
+  }, [geometry, bakedAoVersion, bakedAoIntensity]);
+
   const hasVertexColorAttribute = React.useMemo(() => {
     const colorAttr = geometry.getAttribute('color');
     return !!colorAttr && colorAttr.count > 0;
   }, [geometry]);
 
-  // Edges geometry for Higher Contrast Model Edges overlay.
-  // Pre-computed during geometry import — no render-time cost.
+  // Edges geometry for Higher Contrast Model Edges overlay. Built by the
+  // geometry's own producer when the setting is on (see buildModelEdgeGeometry)
+  // and cached on GeometryWithBounds, so every remount reuses one build — no
+  // render-time or per-mount cost here.
   const edgeLinesGeometry = edgeGeometry ?? null;
 
   // Derive edge color from the selection accent color so edges read as a dark,
@@ -785,8 +805,6 @@ if (uDitherAmount > 0.0) {
     return material;
   }, [outOfBoundsMax, outOfBoundsMin, outOfBoundsStripeColor, showOutOfBoundsOverlay]);
 
-  const supportPlacementGuideEnabled = supportPlacementGuidePlaneZ != null && Number.isFinite(supportPlacementGuidePlaneZ);
-
   const supportPlacementGuideMaterial = React.useMemo(() => {
     const material = new THREE.ShaderMaterial({
       transparent: true,
@@ -824,25 +842,33 @@ if (uDitherAmount > 0.0) {
         uniform float uOpacity;
 
         void main() {
-          float distanceToPlane = abs(vWorldPos.z - uPlaneZ);
-          float baseHalfWidth = max(0.0005, uLineWidthMm * 0.5);
+          // How steeply the surface crosses the guide plane: 1 on a vertical
+          // wall, 0 on a face lying in the plane.
           vec3 worldNormal = normalize(vWorldNormal);
-          vec3 viewDir = normalize(cameraPosition - vWorldPos);
-          float ndotv = abs(dot(worldNormal, viewDir));
-          float grazing = 1.0 - ndotv;
-          float grazingComp = mix(1.0, 0.58, smoothstep(0.45, 0.96, grazing));
+          float slope = sqrt(max(0.0, 1.0 - worldNormal.z * worldNormal.z));
 
-          float compensatedHalfWidth = baseHalfWidth * grazingComp;
-          float aa = max(fwidth(vWorldPos.z) * 1.15, 0.0012);
+          // Distance from the plane's contour measured *along the surface*, so
+          // uLineWidthMm paints the same stripe width at any tilt. Measured in
+          // world Z alone the stripe smears to width / sin(tilt) -- a wide band
+          // on shallow faces, the whole face on one parallel to the plane.
+          float surfaceDist = abs(vWorldPos.z - uPlaneZ) / max(slope, 0.02);
+
+          float baseHalfWidth = max(0.0005, uLineWidthMm * 0.5);
+          float aa = max(fwidth(surfaceDist) * 1.15, 0.0012);
           float feather = min(
-            max(aa * 1.15, compensatedHalfWidth * 0.16),
-            max(aa * 1.1, compensatedHalfWidth * 0.55)
+            max(aa * 1.15, baseHalfWidth * 0.16),
+            max(aa * 1.1, baseHalfWidth * 0.55)
           );
 
-          float lineMask = 1.0 - smoothstep(compensatedHalfWidth - feather, compensatedHalfWidth + feather, distanceToPlane);
+          float lineMask = 1.0 - smoothstep(baseHalfWidth - feather, baseHalfWidth + feather, surfaceDist);
           if (lineMask <= 0.001) discard;
 
-          float alpha = uOpacity * lineMask;
+          // A face lying in the plane has no contour to trace, only a coincident
+          // region: keep it a faint wash rather than a stripe as wide as the face.
+          // Above ~3 degrees of tilt the stripe is real and gets full strength.
+          float slopeFade = mix(0.18, 1.0, smoothstep(0.01, 0.06, slope));
+
+          float alpha = uOpacity * lineMask * slopeFade;
           gl_FragColor = vec4(uLineColor, alpha);
         }
       `,
@@ -854,20 +880,25 @@ if (uDitherAmount > 0.0) {
   React.useEffect(() => {
     if (!supportPlacementGuideMaterial) return;
 
-    supportPlacementGuideMaterial.uniforms.uPlaneZ.value = supportPlacementGuideEnabled
-      ? Number(supportPlacementGuidePlaneZ)
-      : 0;
     supportPlacementGuideMaterial.uniforms.uLineWidthMm.value = Math.max(0.02, supportPlacementGuideLineWidthMm ?? 0.24);
     supportPlacementGuideMaterial.uniforms.uOpacity.value = THREE.MathUtils.clamp(supportPlacementGuideOpacity ?? 0.62, 0, 1);
     (supportPlacementGuideMaterial.uniforms.uLineColor.value as THREE.Color).set(supportPlacementGuideColor ?? '#baf72e');
   }, [
     supportPlacementGuideColor,
-    supportPlacementGuideEnabled,
     supportPlacementGuideLineWidthMm,
     supportPlacementGuideMaterial,
     supportPlacementGuideOpacity,
-    supportPlacementGuidePlaneZ,
   ]);
+
+  // Plane Z is read from the store every frame instead of arriving as a prop:
+  // the cursor and a tip drag move it continuously, and any update deferred to
+  // a render pass quantizes it, which steps the line by z / tan(surface tilt)
+  // on screen.
+  useFrame(() => {
+    const planeZ = getSupportPlacementGuideZ();
+    supportPlacementGuideMaterial.uniforms.uPlaneZ.value =
+      typeof planeZ === 'number' && Number.isFinite(planeZ) ? planeZ : 0;
+  });
 
   // Red/clear striped overlay flagging a non-manifold model (failed the
   // manifold_csg status check). Uses the SAME world-space stripe seed and
@@ -1070,8 +1101,8 @@ if (uDitherAmount > 0.0) {
             return;
           }
 
-          // Support placement in support mode
-          if (mode === 'support' && onSupportClick) {
+          // Support placement in support mode — muted while painting blockers.
+          if (mode === 'support' && onSupportClick && transformMode !== 'supportBlockers') {
             if (blockSupportPlacement) return;
 
             // When cross-section is active and a visible support is behind
@@ -1242,8 +1273,30 @@ if (uDitherAmount > 0.0) {
               }
             }
           }
+          if ((mode === 'prepare' || mode === 'support') && transformMode === 'supportBlockers' && isActiveModel) {
+            if (isGizmoHoverCategory || isSupportLikeHoverCategory) {
+              setSupportBlockerHover(null, null);
+            } else {
+              const normal = e.face?.normal
+                ? e.face.normal
+                  .clone()
+                  .applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(e.object.matrixWorld))
+                  .normalize()
+                : null;
+              setSupportBlockerHover(e.point.clone(), normal);
 
-          if (mode === 'support' && onSupportHover) {
+              // Paint blockers only while the left mouse button is held.
+              if ((e.buttons & 1) === 1 && !disableRaycast) {
+                const localPoint = smoothingScratchLocalPointRef.current;
+                localPoint.copy(e.point);
+                e.object.worldToLocal(localPoint);
+
+                paintSupportBlockers(modelId, geometry, localPoint);
+              }
+            }
+          }
+
+          if (mode === 'support' && onSupportHover && transformMode !== 'supportBlockers') {
             // Mute hover when placement is blocked
             if (blockSupportPlacement) return;
 
@@ -1297,6 +1350,9 @@ if (uDitherAmount > 0.0) {
 
           if (mode === 'prepare' && transformMode === 'smoothing' && isActiveModel) {
             setMeshSmoothingHover(null, null);
+          }
+          if ((mode === 'prepare' || mode === 'support') && transformMode === 'supportBlockers' && isActiveModel) {
+            setSupportBlockerHover(null, null);
           }
 
           if (mode === 'support' && onSupportHover) {
@@ -1382,6 +1438,15 @@ if (uDitherAmount > 0.0) {
             onSmoothingGeometryActivate?.(geometry);
             beginMeshSmoothingEngineStroke(geometry);
           }
+          if ((mode === 'prepare' || mode === 'support') && transformMode === 'supportBlockers' && isActiveModel && e.button === 0) {
+            beginSupportBlockerStroke(modelId);
+
+            const localPoint = smoothingScratchLocalPointRef.current;
+            localPoint.copy(e.point);
+            e.object.worldToLocal(localPoint);
+
+            paintSupportBlockers(modelId, geometry, localPoint);
+          }
         }}
       >
         {interiorView && cavityGeometry ? (
@@ -1422,13 +1487,13 @@ if (uDitherAmount > 0.0) {
             meshColor={meshColor}
             matcapVariant={matcapVariant}
             flatUseVertexColors={flatUseVertexColors}
-            toonSteps={toonSteps}
             materialRoughness={materialRoughness}
             clippingPlanes={planes}
             xrayOpacity={xrayOpacity}
             heatmapMinAngle={heatmapMinAngle}
             heatmapMaxAngle={heatmapMaxAngle}
             heatmapColors={heatmapColors}
+            bakedAoStrength={bakedAoStrength}
           />
         )}
       </mesh>
@@ -1450,7 +1515,6 @@ if (uDitherAmount > 0.0) {
               meshColor={meshColor}
               matcapVariant={matcapVariant}
               flatUseVertexColors={flatUseVertexColors}
-              toonSteps={toonSteps}
               materialRoughness={materialRoughness}
               clippingPlanes={planes}
               xrayOpacity={xrayOpacity}

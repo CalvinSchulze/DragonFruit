@@ -10,6 +10,7 @@ import { SponsorsCarousel } from '@/components/settings/SponsorsCarousel';
 import { CameraSettingsTab } from '@/components/settings/CameraSettingsTab';
 import { HotkeysSettingsTab } from '@/components/settings/HotkeysSettingsTab';
 import { MeshSettingsTab } from '@/components/settings/MeshSettingsTab';
+import { DEFAULT_BAKED_OCCLUSION_INTENSITY } from '@/features/scene/bakedOcclusion';
 import { PluginsSettingsTab } from '@/components/settings/PluginsSettingsTab';
 import { ExperimentsSettingsTab } from '@/components/settings/ExperimentsSettingsTab';
 import { getEnabledExperimentIds } from '@/features/experiments/experimentsRegistry';
@@ -34,6 +35,7 @@ import {
   getSavedThemeCustomColors,
   getSavedCustomThemeProfiles,
   getThemeProfile,
+  getThemeProfiles,
   getSavedThemePreset,
   getSavedThemePreference,
   exportThemeProfileToJson,
@@ -46,8 +48,8 @@ import {
   THEME_CUSTOM_PROFILES_STORAGE_KEY,
   THEME_PRESET_STORAGE_KEY,
   THEME_STORAGE_KEY,
-  type ThemePreset,
   type ThemeCustomColors,
+  type ThemePreset,
   type SavedCustomThemeProfile,
 } from '@/components/settings/themeCustomizations';
 import { StructuredDialogModal } from '@/components/ui/StructuredDialogModal';
@@ -129,20 +131,20 @@ import {
   saveImportDefaultsSettings,
   type ImportDefaultsSettings,
 } from '@/features/scene/importDefaultsPreferences';
+import { ColorSwatchInput } from '@/components/atoms';
 
 const DEFAULT_MESH_COLOR = '#a3a3a3';
 const DEFAULT_HEATMAP_MIN_ANGLE = 0;
 const DEFAULT_HEATMAP_MAX_ANGLE = 45;
-const DEFAULT_AMBIENT_INTENSITY = 0.6;
-const DEFAULT_DIRECTIONAL_INTENSITY = 0.8;
-const DEFAULT_MATERIAL_ROUGHNESS = 0.65;
+const DEFAULT_AMBIENT_INTENSITY = 0.28;
+const DEFAULT_DIRECTIONAL_INTENSITY = 1.12;
+const DEFAULT_MATERIAL_ROUGHNESS = 0.55;
 const DEFAULT_XRAY_OPACITY = 0.25;
 const DEFAULT_SHADER_TYPE: MeshShaderType = 'soft_clay';
 const DEFAULT_MATCAP_VARIANT: MatcapVariant = 'neutral';
 const DEFAULT_FLAT_USE_VERTEX_COLORS = true;
-const DEFAULT_TOON_STEPS = 5;
 const DEFAULT_HOVER_TINT_STRENGTH = 0.5;
-const DEFAULT_SELECTED_TINT_STRENGTH = 0.75;
+const DEFAULT_SELECTED_TINT_STRENGTH = 0.70;
 const DRAGONFRUIT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? '0.0.0';
 const DRAGONFRUIT_BUILD_CHANNEL = (process.env.NEXT_PUBLIC_BUILD_CHANNEL ?? 'mainline').trim().toLowerCase();
 const DRAGONFRUIT_GIT_COMMIT = process.env.NEXT_PUBLIC_GIT_COMMIT ?? '';
@@ -171,24 +173,22 @@ type SettingsModalProps = {
   onClose: () => void;
   meshColor: string;
   onMeshColorChange: (color: string) => void;
-  selectionColor: string;
-  onSelectionColorChange: (color: string) => void;
-  hoverColor: string;
-  onHoverColorChange: (color: string) => void;
-  shaderType: MeshShaderType;
-  onShaderTypeChange: (shaderType: MeshShaderType) => void;
+  /** The type the Mesh tab is configuring. Does not change what the viewport renders. */
+  configuredShaderType: MeshShaderType;
+  onConfiguredShaderTypeChange: (shaderType: MeshShaderType) => void;
   matcapVariant: MatcapVariant;
   onMatcapVariantChange: (variant: MatcapVariant) => void;
   flatUseVertexColors: boolean;
   onFlatUseVertexColorsChange: (value: boolean) => void;
-  toonSteps: number;
-  onToonStepsChange: (value: number) => void;
   ambientIntensity: number;
   onAmbientIntensityChange: (value: number) => void;
   directionalIntensity: number;
   onDirectionalIntensityChange: (value: number) => void;
   materialRoughness: number;
+  /** Multiplier on the baked occlusion's strength; 0 means the bake is off. */
+  bakedAoIntensity: number;
   onMaterialRoughnessChange: (value: number) => void;
+  onBakedAoIntensityChange: (value: number) => void;
   xrayOpacity: number;
   heatmapMinAngle: number;
   heatmapMaxAngle: number;
@@ -290,23 +290,19 @@ export function SettingsModal({
   onClose,
   meshColor,
   onMeshColorChange,
-  selectionColor,
-  onSelectionColorChange,
-  hoverColor,
-  onHoverColorChange,
-  shaderType,
-  onShaderTypeChange,
+  configuredShaderType,
+  onConfiguredShaderTypeChange,
   matcapVariant,
   onMatcapVariantChange,
   flatUseVertexColors,
   onFlatUseVertexColorsChange,
-  toonSteps,
-  onToonStepsChange,
   ambientIntensity,
   onAmbientIntensityChange,
   directionalIntensity,
   onDirectionalIntensityChange,
   materialRoughness,
+  bakedAoIntensity,
+  onBakedAoIntensityChange,
   onMaterialRoughnessChange,
   xrayOpacity,
   heatmapMinAngle,
@@ -388,21 +384,19 @@ export function SettingsModal({
   const [draftLocale, setDraftLocale] = useState(activeLocale);
 
   const [draftMeshColor, setDraftMeshColor] = useState(meshColor);
-  const [draftShaderType, setDraftShaderType] = useState(shaderType);
+  const [draftShaderType, setDraftShaderType] = useState(configuredShaderType);
   const [draftMatcapVariant, setDraftMatcapVariant] = useState(matcapVariant);
   const [draftFlatUseVertexColors, setDraftFlatUseVertexColors] = useState(flatUseVertexColors);
-  const [draftToonSteps, setDraftToonSteps] = useState(toonSteps);
   const [draftAmbientIntensity, setDraftAmbientIntensity] = useState(ambientIntensity);
   const [draftDirectionalIntensity, setDraftDirectionalIntensity] = useState(directionalIntensity);
   const [draftMaterialRoughness, setDraftMaterialRoughness] = useState(materialRoughness);
+  const [draftBakedAoIntensity, setDraftBakedAoIntensity] = useState(bakedAoIntensity);
   const [draftXrayOpacity, setDraftXrayOpacity] = useState(xrayOpacity);
   const [draftHeatmapMinAngle, setDraftHeatmapMinAngle] = useState(heatmapMinAngle);
   const [draftHeatmapMaxAngle, setDraftHeatmapMaxAngle] = useState(heatmapMaxAngle);
   const [draftHeatmapColors, setDraftHeatmapColors] = useState(heatmapColors);
   const [draftHoverTintStrength, setDraftHoverTintStrength] = useState(hoverTintStrength);
   const [draftSelectedTintStrength, setDraftSelectedTintStrength] = useState(selectedTintStrength);
-  const [draftSelectionColor, setDraftSelectionColor] = useState(selectionColor);
-  const [draftHoverColor, setDraftHoverColor] = useState(hoverColor);
   const [draftCameraProjectionMode, setDraftCameraProjectionMode] = useState<CameraProjectionMode>(() => getSavedCameraProjectionSettings().mode);
   const [draftCameraFeelPreset, setDraftCameraFeelPreset] = useState<CameraFeelPreset>(() => getSavedCameraFeelSettings().preset);
   const [draftCameraTrackpadPrimaryAction, setDraftCameraTrackpadPrimaryAction] = useState<CameraTrackpadPrimaryAction>(() => getSavedCameraTrackpadSettings().primaryAction);
@@ -415,7 +409,11 @@ export function SettingsModal({
   const [draftPerspectiveFov, setDraftPerspectiveFov] = useState<number>(() => getSavedCameraFovSettings().fov);
   const [draftThemePreference, setDraftThemePreference] = useState(getSavedThemePreference());
   const [draftThemePreset, setDraftThemePreset] = useState<ThemePreset>(getSavedThemePreset());
-  const [draftThemeColors, setDraftThemeColors] = useState<ThemeCustomColors>(getSavedThemeCustomColors());
+  const [draftThemeColors, setDraftThemeColors] = useState<ThemeCustomColors>(() => {
+    const preset = getSavedThemePreset();
+    const profile = getThemeProfile(preset, getSavedCustomThemeProfiles());
+    return { ...profile.colors };
+  });
   const [draftThemeProfiles, setDraftThemeProfiles] = useState<SavedCustomThemeProfile[]>(() => getSavedCustomThemeProfiles());
   const [draftCustomThemeName, setDraftCustomThemeName] = useState<string>(() => {
     const savedPreset = getSavedThemePreset();
@@ -452,6 +450,15 @@ export function SettingsModal({
   const didCommitThemeDraftRef = React.useRef(false);
   const showPngCompressionControls = outputFormatUsesPngLayers(activeOutputFormat ?? undefined);
 
+  // The Mesh tab's Selection & Hover section edits the theme's mesh highlight
+  // colors (not a separate appearance override), so its Reset restores the
+  // values stored on the selected profile — the same source the UI tab's Reset
+  // uses.
+  const draftThemeProfileColors = React.useMemo(
+    () => getThemeProfile(draftThemePreset, draftThemeProfiles).colors,
+    [draftThemePreset, draftThemeProfiles],
+  );
+
   // Load saved update channel preference.
   React.useEffect(() => {
     getUpdateChannel().then(setUpdateChannel);
@@ -486,21 +493,19 @@ export function SettingsModal({
     const savedThemeProfile = getThemeProfile(savedThemePreset, savedThemeProfiles);
 
     setDraftMeshColor(meshColor);
-    setDraftShaderType(shaderType);
+    setDraftShaderType(configuredShaderType);
     setDraftMatcapVariant(matcapVariant);
     setDraftFlatUseVertexColors(flatUseVertexColors);
-    setDraftToonSteps(toonSteps);
     setDraftAmbientIntensity(ambientIntensity);
     setDraftDirectionalIntensity(directionalIntensity);
     setDraftMaterialRoughness(materialRoughness);
+    setDraftBakedAoIntensity(bakedAoIntensity);
     setDraftXrayOpacity(xrayOpacity);
     setDraftHeatmapMinAngle(heatmapMinAngle);
     setDraftHeatmapMaxAngle(heatmapMaxAngle);
     setDraftHeatmapColors(heatmapColors);
     setDraftHoverTintStrength(hoverTintStrength);
     setDraftSelectedTintStrength(selectedTintStrength);
-    setDraftSelectionColor(selectionColor);
-    setDraftHoverColor(hoverColor);
     setDraftCameraProjectionMode(getSavedCameraProjectionSettings().mode);
     setDraftCameraFeelPreset(getSavedCameraFeelSettings().preset);
     setDraftCameraTrackpadPrimaryAction(getSavedCameraTrackpadSettings().primaryAction);
@@ -533,18 +538,16 @@ export function SettingsModal({
     directionalIntensity,
     flatUseVertexColors,
     meshColor,
-    toonSteps,
     matcapVariant,
     materialRoughness,
+    bakedAoIntensity,
     heatmapColors,
     hoverTintStrength,
     selectedTintStrength,
-    selectionColor,
-    hoverColor,
     debugPrimitivesPanelVisible,
     view3dSettings,
     slicingThumbnailRenderSettings,
-    shaderType,
+    configuredShaderType,
     xrayOpacity,
     heatmapMinAngle,
     heatmapMaxAngle,
@@ -557,11 +560,21 @@ export function SettingsModal({
       [key]: value,
     }));
   }, []);
-
+  // The Mesh tab edits these two theme colors, so both surfaces write the same
+  // draft entry.
+  const handleMeshSelectionColorChange = React.useCallback((color: string) => {
+    handleThemeColorChange('meshSelectionColor', color);
+  }, [handleThemeColorChange]);
+  const handleMeshHoverColorChange = React.useCallback((color: string) => {
+    handleThemeColorChange('meshHoverColor', color);
+  }, [handleThemeColorChange]);
   const restoreSavedThemePreview = React.useCallback(() => {
     applyThemePreference(getSavedThemePreference());
     applyThemeCustomColors(getSavedThemeCustomColors());
   }, []);
+  const handleThemePresetChange = React.useCallback((preset: ThemePreset) => {
+    setThemeDraftFromProfile(preset, draftThemeProfiles);
+  }, [draftThemeProfiles, setThemeDraftFromProfile]);
 
   const handleDraftHeatmapColorChange = React.useCallback((index: number, color: string) => {
     setDraftHeatmapColors((prev) => {
@@ -570,10 +583,6 @@ export function SettingsModal({
       return copy;
     });
   }, []);
-
-  const handleThemePresetChange = React.useCallback((preset: ThemePreset) => {
-    setThemeDraftFromProfile(preset, draftThemeProfiles);
-  }, [draftThemeProfiles, setThemeDraftFromProfile]);
 
   const handleResetThemeColors = React.useCallback(() => {
     const profile = getThemeProfile(draftThemePreset, draftThemeProfiles);
@@ -829,17 +838,15 @@ export function SettingsModal({
     setDraftShaderType(DEFAULT_SHADER_TYPE);
     setDraftMatcapVariant(DEFAULT_MATCAP_VARIANT);
     setDraftFlatUseVertexColors(DEFAULT_FLAT_USE_VERTEX_COLORS);
-    setDraftToonSteps(DEFAULT_TOON_STEPS);
     setDraftAmbientIntensity(DEFAULT_AMBIENT_INTENSITY);
     setDraftDirectionalIntensity(DEFAULT_DIRECTIONAL_INTENSITY);
     setDraftMaterialRoughness(DEFAULT_MATERIAL_ROUGHNESS);
+    setDraftBakedAoIntensity(DEFAULT_BAKED_OCCLUSION_INTENSITY);
     setDraftXrayOpacity(DEFAULT_XRAY_OPACITY);
     setDraftHeatmapMinAngle(DEFAULT_HEATMAP_MIN_ANGLE);
     setDraftHeatmapMaxAngle(DEFAULT_HEATMAP_MAX_ANGLE);
     setDraftHoverTintStrength(DEFAULT_HOVER_TINT_STRENGTH);
     setDraftSelectedTintStrength(DEFAULT_SELECTED_TINT_STRENGTH);
-    setDraftSelectionColor(DEFAULT_THEME_CUSTOM_COLORS.accent);
-    setDraftHoverColor(DEFAULT_THEME_CUSTOM_COLORS.accentHover);
     setDraftCameraProjectionMode(DEFAULT_CAMERA_PROJECTION_SETTINGS.mode);
     setDraftCameraFeelPreset(DEFAULT_CAMERA_FEEL_SETTINGS.preset);
     setDraftCameraTrackpadPrimaryAction(DEFAULT_CAMERA_TRACKPAD_SETTINGS.primaryAction);
@@ -908,22 +915,19 @@ export function SettingsModal({
   const handleApply = React.useCallback(() => {
     applyLocale(draftLocale);
     onMeshColorChange(draftMeshColor);
-    onShaderTypeChange(draftShaderType);
+    onConfiguredShaderTypeChange(draftShaderType);
     onMatcapVariantChange(draftMatcapVariant);
     onFlatUseVertexColorsChange(draftFlatUseVertexColors);
-    onToonStepsChange(draftToonSteps);
     onAmbientIntensityChange(draftAmbientIntensity);
     onDirectionalIntensityChange(draftDirectionalIntensity);
     onMaterialRoughnessChange(draftMaterialRoughness);
+    onBakedAoIntensityChange(draftBakedAoIntensity);
     onXrayOpacityChange(draftXrayOpacity);
     onHeatmapMinAngleChange(draftHeatmapMinAngle);
     onHeatmapMaxAngleChange(draftHeatmapMaxAngle);
     draftHeatmapColors.forEach((color, i) => onHeatmapColorChange(i, color));
     onHoverTintStrengthChange(draftHoverTintStrength);
     onSelectedTintStrengthChange(draftSelectedTintStrength);
-    onSelectionColorChange(draftSelectionColor);
-    onHoverColorChange(draftHoverColor);
-
     applyThemePreference(draftThemePreference);
     applyThemeCustomColors(draftThemeColors);
     setFloatingLayoutPersistenceEnabled(draftFloatingLayoutPersistence);
@@ -965,6 +969,9 @@ export function SettingsModal({
     didCommitThemeDraftRef.current = true;
     requestClose();
   }, [
+    // Every draft this callback reads belongs in this list. One omission and
+    // Apply pushes whatever the draft happened to be when the callback was last
+    // rebuilt, which presents as a control that saves once and then reverts.
     applyLocale,
     draftLocale,
     draftAmbientIntensity,
@@ -972,16 +979,14 @@ export function SettingsModal({
     draftFlatUseVertexColors,
     draftMatcapVariant,
     draftMaterialRoughness,
+    draftBakedAoIntensity,
     draftMeshColor,
     draftHoverTintStrength,
     draftSelectedTintStrength,
-    draftSelectionColor,
-    draftHoverColor,
     draftCameraScope,
     draftHigherContrastModelEdges,
     draftThemePreset,
     draftShaderType,
-    draftToonSteps,
     draftThemePreference,
     draftThemeColors,
     draftThemeProfiles,
@@ -1017,13 +1022,10 @@ export function SettingsModal({
     onMeshColorChange,
     onHoverTintStrengthChange,
     onSelectedTintStrengthChange,
-    onSelectionColorChange,
-    onHoverColorChange,
     onDebugPrimitivesPanelVisibleChange,
     onSlicingThumbnailRenderSettingsChange,
     onView3dSettingsChange,
-    onShaderTypeChange,
-    onToonStepsChange,
+    onConfiguredShaderTypeChange,
     onXrayOpacityChange,
     onHeatmapMinAngleChange,
     onHeatmapMaxAngleChange,
@@ -1058,12 +1060,6 @@ export function SettingsModal({
     applyThemeCustomColors(draftThemeColors);
   }, [draftThemeColors, draftThemePreference, isOpen]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-
-    setDraftSelectionColor(draftThemeColors.accent);
-    setDraftHoverColor(draftThemeColors.accentHover);
-  }, [draftThemeColors.accent, draftThemeColors.accentHover, isOpen]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1453,7 +1449,7 @@ export function SettingsModal({
             </div>
           </div>
 
-          <div className={usesInternalTabScrollLayout ? 'flex-1 min-h-0 flex flex-col p-4' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4'}>
+          <div className={usesInternalTabScrollLayout ? 'flex-1 min-h-0 min-w-0 flex flex-col p-4' : 'flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4'}>
 
             <div key={activeTab} className={usesInternalTabScrollLayout ? 'animate-[settingsTabIn_180ms_ease-out] flex-1 min-h-0 flex flex-col' : 'animate-[settingsTabIn_180ms_ease-out]'}>
               {activeTab === 'general' && (
@@ -1503,14 +1499,12 @@ export function SettingsModal({
               )}
               {activeTab === 'mesh' && (
                 <MeshSettingsTab
-                  shaderType={draftShaderType}
-                  onShaderTypeChange={setDraftShaderType}
+                  configuredShaderType={draftShaderType}
+                  onConfiguredShaderTypeChange={setDraftShaderType}
                   matcapVariant={draftMatcapVariant}
                   onMatcapVariantChange={setDraftMatcapVariant}
                   flatUseVertexColors={draftFlatUseVertexColors}
                   onFlatUseVertexColorsChange={setDraftFlatUseVertexColors}
-                  toonSteps={draftToonSteps}
-                  onToonStepsChange={setDraftToonSteps}
                   meshColor={draftMeshColor}
                   onMeshColorChange={setDraftMeshColor}
                   ambientIntensity={draftAmbientIntensity}
@@ -1519,6 +1513,8 @@ export function SettingsModal({
                   onDirectionalIntensityChange={setDraftDirectionalIntensity}
                   materialRoughness={draftMaterialRoughness}
                   onMaterialRoughnessChange={setDraftMaterialRoughness}
+                  bakedAoIntensity={draftBakedAoIntensity}
+                  onBakedAoIntensityChange={setDraftBakedAoIntensity}
                   xrayOpacity={draftXrayOpacity}
                   heatmapMinAngle={draftHeatmapMinAngle}
                   heatmapMaxAngle={draftHeatmapMaxAngle}
@@ -1527,14 +1523,16 @@ export function SettingsModal({
                   onHeatmapMaxAngleChange={setDraftHeatmapMaxAngle}
                   heatmapColors={draftHeatmapColors}
                   onHeatmapColorChange={handleDraftHeatmapColorChange}
-                  selectionColor={draftSelectionColor}
-                  onSelectionColorChange={setDraftSelectionColor}
-                  hoverColor={draftHoverColor}
-                  onHoverColorChange={setDraftHoverColor}
+                  meshSelectionColor={draftThemeColors.meshSelectionColor}
+                  onMeshSelectionColorChange={handleMeshSelectionColorChange}
+                  meshHoverColor={draftThemeColors.meshHoverColor}
+                  onMeshHoverColorChange={handleMeshHoverColorChange}
                   hoverTintStrength={draftHoverTintStrength}
                   onHoverTintStrengthChange={setDraftHoverTintStrength}
                   selectedTintStrength={draftSelectedTintStrength}
                   onSelectedTintStrengthChange={setDraftSelectedTintStrength}
+                  defaultMeshSelectionColor={draftThemeProfileColors.meshSelectionColor}
+                  defaultMeshHoverColor={draftThemeProfileColors.meshHoverColor}
                 />
               )}
               {activeTab === 'performance' && (
@@ -1548,11 +1546,7 @@ export function SettingsModal({
               )}
               {activeTab === 'ui' && (
                 <UISettingsTab
-                  themeProfiles={[
-                    getThemeProfile('dragonfruit-dark', draftThemeProfiles),
-                    getThemeProfile('dragonfruit-light', draftThemeProfiles),
-                    ...draftThemeProfiles.map((profile) => getThemeProfile(profile.id, draftThemeProfiles)),
-                  ]}
+                  themeProfiles={getThemeProfiles(draftThemeProfiles)}
                   themePreset={draftThemePreset}
                   onThemePresetChange={handleThemePresetChange}
                   themePreference={draftThemePreference}
@@ -1905,8 +1899,12 @@ export function SettingsModal({
                 <button
                   type="button"
                   onClick={handleConfirmRestoreDefaults}
-                  className="ui-button !h-9 px-3 text-xs inline-flex items-center gap-1.5"
-                  style={accentSecondaryActionStyle92}
+                  className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
+                  style={{
+                    borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+                    background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+                    color: 'var(--accent)',
+                  }}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   Restore Defaults
@@ -1985,8 +1983,12 @@ export function SettingsModal({
                 <button
                   type="button"
                   onClick={reloadToApplyExperiments}
-                  className="ui-button !h-9 px-3 text-xs inline-flex items-center gap-1.5"
-                  style={accentSecondaryActionStyle92}
+                  className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
+                  style={{
+                    borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+                    background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+                    color: 'var(--accent)',
+                  }}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   Reload Now
@@ -2019,8 +2021,12 @@ export function SettingsModal({
             <button
               type="button"
               onClick={handleConfirmSaveCurrentCustomTheme}
-              className="ui-button !h-9 px-3 text-xs inline-flex items-center gap-1.5"
-              style={accentSecondaryActionStyle92}
+              className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+                color: 'var(--accent)',
+              }}
             >
               <Save className="h-3.5 w-3.5" />
               Save Theme
@@ -2055,11 +2061,11 @@ export function SettingsModal({
             <button
               type="button"
               onClick={handleConfirmDeleteCurrentCustomTheme}
-              className="ui-button ui-button-secondary !h-9 px-3 text-xs inline-flex items-center gap-1.5"
+              className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
               style={{
+                borderColor: 'color-mix(in srgb, #ef4444, var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, #ef4444, var(--surface-1) 86%)',
                 color: 'var(--danger)',
-                borderColor: 'color-mix(in srgb, var(--danger), var(--border-subtle) 40%)',
-                background: 'color-mix(in srgb, var(--danger), var(--surface-1) 92%)',
               }}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -2095,8 +2101,12 @@ export function SettingsModal({
             <button
               type="button"
               onClick={handleConfirmRenameCurrentCustomTheme}
-              className="ui-button !h-9 px-3 text-xs inline-flex items-center gap-1.5"
-              style={accentSecondaryActionStyle92}
+              className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+                color: 'var(--accent)',
+              }}
               disabled={draftThemeRenameName.trim().length === 0}
             >
               <Check className="h-3.5 w-3.5" />
@@ -2161,12 +2171,10 @@ export function SettingsModal({
                   Primary branding
                 </label>
                 <div className="flex items-center gap-1.5">
-                  <input
-                    type="color"
+                  <ColorSwatchInput
                     value={draftThemeCreatePrimaryBrandColor}
-                    onChange={(event) => setDraftThemeCreatePrimaryBrandColor(event.target.value)}
-                    className="h-8 w-9 shrink-0 rounded border"
-                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}
+                    onChange={setDraftThemeCreatePrimaryBrandColor}
+                    className="h-8 w-9"
                   />
                   <input
                     type="text"
@@ -2183,12 +2191,10 @@ export function SettingsModal({
                   Secondary branding
                 </label>
                 <div className="flex items-center gap-1.5">
-                  <input
-                    type="color"
+                  <ColorSwatchInput
                     value={draftThemeCreateSecondaryBrandColor}
-                    onChange={(event) => setDraftThemeCreateSecondaryBrandColor(event.target.value)}
-                    className="h-8 w-9 shrink-0 rounded border"
-                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}
+                    onChange={setDraftThemeCreateSecondaryBrandColor}
+                    className="h-8 w-9"
                   />
                   <input
                     type="text"

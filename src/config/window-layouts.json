@@ -363,6 +363,10 @@
           "side": "left-edge"
         },
         "support-auto": {
+          "to": "support-rotation",
+          "side": "below"
+        },
+        "support-rotation": {
           "to": "support-islands",
           "side": "below"
         }

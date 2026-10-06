@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { STLExporter } from 'three-stdlib';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
 import type { ModelMeshModifiers } from '@/features/mesh-modifiers/types';
+import type { MeshHealthReport } from '@/utils/meshRepair';
 import { resolveModelMeshModifiers } from '@/features/mesh-modifiers/meshModifierStore';
 import { KNOWN_SOURCE_EXTENSION_STRIP_RE } from '@/features/plugins/pluginFileTypeExtensions';
 import { buildSupportExportFromStores, serializeVoxlDocumentV2, serializeVoxlDocumentV2Streaming, VoxlSizeLimitError, VoxlUnchangedError, type PrecompressedChunk, type VoxlChunkCache, type VoxlChunkReportEntry } from '@/features/scene/voxl';
@@ -9,14 +10,13 @@ import { type BakedChunk, meshChunkStore } from '@/features/scene/voxl/meshChunk
 import { buildScopedSupportExportDocument, buildScopedSupportGeometryGroup } from '@/features/export/logic/supportExportReconstruction';
 import { allocateMeshStagePath, exportMeshFile, pickSavePathWithNativeDialog, writeChunkedToNativePath, writeFileAtomicToNativePath, writeFileAtomicStreamedToNativePath } from '@/features/slicing/tauri/nativeSlicerBridge';
 import { info as logInfo } from '@tauri-apps/plugin-log';
-import { getKickstandSnapshot } from '@/supports/SupportTypes/Kickstand/kickstandStore';
 import { getSnapshot } from '@/supports/state';
+import { SUPPORT_COLLECTION_KEYS } from '@/supports/supportTypeRegistry';
 import { getRaftSettings, getRaftSettingsForModel } from '@/supports/Rafts/Crenelated/RaftState';
-import { computeFootprint } from '@/supports/Rafts/Crenelated/geometry/computeFootprint';
-import { generateChamferedBase } from '@/supports/Rafts/Crenelated/geometry/generateChamferedBase';
-import { generatePerimeterWall } from '@/supports/Rafts/Crenelated/geometry/generatePerimeterWall';
-import { generateCrenelatedWallManual } from '@/supports/Rafts/Crenelated/geometry/generateCrenelatedWallManual';
-import { generateUnionedLineRaftMesh } from '@/supports/Rafts/Crenelated/geometry/generateUnionedLineRaftMesh';
+import { buildRaftFootprintMeshes } from '@/supports/Rafts/Crenelated/geometry/generateRaftFromFootprint';
+import { collectModelPlateFootprint } from '@/supports/Rafts/Crenelated/geometry/modelPlateFootprint';
+import { inflateModelPlateClearance, raftBandTopMm } from '@/supports/Rafts/Crenelated/geometry/computeRaftFootprint';
+import { filterLineRaftEdges, generateUnionedLineRaftMesh } from '@/supports/Rafts/Crenelated/geometry/generateUnionedLineRaftMesh';
 import { generateChamferedBeam } from '@/supports/Rafts/Crenelated/geometry/generateChamferedBeam';
 import { buildLineRaftEdgePairs } from '@/supports/Rafts/Crenelated/geometry/buildLineRaftEdgePairs';
 import { SupportBaseCircle } from '@/supports/Rafts/Crenelated/RaftTypes';
@@ -677,72 +677,6 @@ export class ExportManager {
   }
 
   /**
-   * Streams a 3MF ZIP directly to the native file system using append_mesh_stage_chunk.
-   *
-   * Three sequential writes to the same path:
-   *   1. Preamble  — local headers for the two small metadata files + their data +
-   *                  the model local header (flag bit 3, CRC/sizes = 0).
-   *   2. XML chunks — streamed one 4 MB chunk at a time, never all in memory at once.
-   *   3. Postamble — data descriptor + central directory + end-of-central-directory.
-   *
-   * append_mesh_stage_chunk truncates the file on the first call to a given path and
-   * appends on all subsequent calls, so the three sequential writeChunkedToNativePath
-   * calls are always correct.
-   */
-  private static async streamZipToNativePath(
-    nativePath: string,
-    ctName: Uint8Array, ctData: Uint8Array,
-    relsName: Uint8Array, relsData: Uint8Array,
-    modelName: Uint8Array,
-    xmlChunks: Uint8Array[], xmlCrc32: number, xmlTotalBytes: number,
-  ): Promise<void> {
-    const ctCrc   = this.crc32(ctData);
-    const relsCrc = this.crc32(relsData);
-    const ctHeader    = this.buildLocalFileHeader(ctName,    ctCrc,   ctData.length,   false);
-    const relsHeader  = this.buildLocalFileHeader(relsName,  relsCrc, relsData.length, false);
-    const modelHeader = this.buildLocalFileHeader(modelName, 0, 0, true);
-
-    const ctOffset    = 0;
-    const relsOffset  = ctHeader.length + ctData.length;
-    const modelOffset = relsOffset + relsHeader.length + relsData.length;
-
-    // ── 1. Preamble (truncates the output file) ──
-    const preambleSize = ctHeader.length + ctData.length + relsHeader.length + relsData.length + modelHeader.length;
-    const preamble = new Uint8Array(preambleSize);
-    let p = 0;
-    preamble.set(ctHeader,    p); p += ctHeader.length;
-    preamble.set(ctData,      p); p += ctData.length;
-    preamble.set(relsHeader,  p); p += relsHeader.length;
-    preamble.set(relsData,    p); p += relsData.length;
-    preamble.set(modelHeader, p);
-    await writeChunkedToNativePath(nativePath, preamble);
-
-    // ── 2. XML chunks (appended sequentially) ──
-    for (const chunk of xmlChunks) {
-      await writeChunkedToNativePath(nativePath, chunk);
-    }
-
-    // ── 3. Postamble: data descriptor + central dir + EOCD ──
-    const cdOffset = modelOffset + modelHeader.length + xmlTotalBytes + 16;
-    const dataDesc = this.buildDataDescriptor(xmlCrc32, xmlTotalBytes);
-    const cdCt     = this.buildCentralDirEntry(ctName,    ctCrc,    ctData.length,   ctOffset,    false);
-    const cdRels   = this.buildCentralDirEntry(relsName,  relsCrc,  relsData.length, relsOffset,  false);
-    const cdModel  = this.buildCentralDirEntry(modelName, xmlCrc32, xmlTotalBytes,   modelOffset, true);
-    const cdSize   = cdCt.length + cdRels.length + cdModel.length;
-    const eocd     = this.buildEocd(3, cdSize, cdOffset);
-
-    const postambleSize = dataDesc.length + cdCt.length + cdRels.length + cdModel.length + eocd.length;
-    const postamble = new Uint8Array(postambleSize);
-    p = 0;
-    postamble.set(dataDesc, p); p += dataDesc.length;
-    postamble.set(cdCt,     p); p += cdCt.length;
-    postamble.set(cdRels,   p); p += cdRels.length;
-    postamble.set(cdModel,  p); p += cdModel.length;
-    postamble.set(eocd,     p);
-    await writeChunkedToNativePath(nativePath, postamble);
-  }
-
-  /**
    * Builds the 3MF model XML in fixed-size chunks (4 MB each) to avoid a single
    * large pre-allocation.
    *
@@ -751,10 +685,8 @@ export class ExportManager {
    * reliably throws `RangeError: Array buffer allocation failed` on constrained
    * heap environments.
    *
-   * Callers either stream the returned chunks directly to a native file
-   * (Tauri / streamZipToNativePath) or fold them into a Blob (browser /
-   * buildBlobZip).  Neither path ever requires a single contiguous buffer for
-   * the full model XML.
+   * The caller folds the returned chunks into a Blob (`buildBlobZip`), which
+   * never requires a single contiguous buffer for the full model XML.
    */
   private static async buildMinimal3mfXmlChunks(
     objects: THREE.Object3D[],
@@ -896,7 +828,7 @@ export class ExportManager {
     ws('<triangles>');
 
     for (const entry of geoEntries) {
-      const { geo, mat, startVertex } = entry;
+      const { geo, startVertex } = entry;
       const pos = geo.getAttribute('position')!;
       const idx = geo.getIndex();
 
@@ -936,8 +868,6 @@ export class ExportManager {
   private static async export3mf(
     objects: THREE.Object3D[],
     filename: string,
-    prePickedNativePath: string | null,
-    useNativeWrite: boolean,
   ): Promise<string | null> {
     const enc = new TextEncoder();
     const ctName    = enc.encode('[Content_Types].xml');
@@ -953,16 +883,6 @@ export class ExportManager {
     for (const chunk of xmlChunks) xmlCrcState = this.updateCrc32(xmlCrcState, chunk);
     const xmlCrc32 = (xmlCrcState ^ 0xffffffff) >>> 0;
 
-    if (prePickedNativePath && useNativeWrite) {
-      await this.streamZipToNativePath(
-        prePickedNativePath,
-        ctName, ctData, relsName, relsData, modelName,
-        xmlChunks, xmlCrc32, xmlTotalBytes,
-      );
-      return prePickedNativePath;
-    }
-
-    // Browser fallback: Blob-based ZIP.
     const zipBlob = this.buildBlobZip(
       ctName, ctData, relsName, relsData, modelName,
       xmlChunks, xmlCrc32, xmlTotalBytes,
@@ -1038,8 +958,7 @@ export class ExportManager {
     if (options.includeSupports) {
       if (hasScopedModelFilter) {
         const supportSnapshot = getSnapshot();
-        const kickstandSnapshot = getKickstandSnapshot();
-        const scopedSupports = buildScopedSupportGeometryGroup(supportSnapshot, kickstandSnapshot, scopedModelIds);
+        const scopedSupports = buildScopedSupportGeometryGroup(supportSnapshot, scopedModelIds);
         if (scopedSupports.children.length > 0) {
           exportObjects.push(scopedSupports);
         }
@@ -1054,9 +973,7 @@ export class ExportManager {
       const globalRaftSettings = getRaftSettings();
       if (globalRaftSettings.bottomMode !== 'off') {
         const supportState = getSnapshot();
-        const kickstandState = getKickstandSnapshot();
         const allRoots = Object.values(supportState.roots);
-        const allKickstandRoots = Object.values(kickstandState.roots);
 
         // Group roots by modelId so each model gets a separate raft
         const rootsByModel = new Map<string, typeof allRoots>();
@@ -1074,19 +991,7 @@ export class ExportManager {
           arr.push(root);
         }
 
-        for (const root of allKickstandRoots) {
-          const rootModelId = root.modelId ?? null;
-          if (hasScopedModelFilter) {
-            if (!rootModelId || !scopedModelIds.has(rootModelId)) {
-              continue;
-            }
-          }
-
-          const mid = rootModelId ?? '__orphan__';
-          let arr = rootsByModel.get(mid);
-          if (!arr) { arr = []; rootsByModel.set(mid, arr); }
-          arr.push(root);
-        }
+        const clearanceTargets = (sceneContext?.models ?? []).filter((model) => model.visible);
 
         for (const [modelKey, roots] of rootsByModel) {
           if (roots.length === 0) continue;
@@ -1095,35 +1000,26 @@ export class ExportManager {
           const modelId = modelKey === '__orphan__' ? null : modelKey;
           const raftSettings = modelId ? getRaftSettingsForModel(modelId) : globalRaftSettings;
 
-          const thickness = raftSettings.bottomMode === 'line' ? raftSettings.lineHeightMm : raftSettings.thickness;
-          const chamferInset = Math.max(0, thickness) * Math.tan((Math.PI / 180) * (90 - Math.min(90, Math.max(45, raftSettings.chamferAngle))));
-          const wallInset = raftSettings.wallEnabled ? Math.max(0, raftSettings.wallThickness) : 0;
-          const dynamicMargin = 0.2 + Math.max(chamferInset, wallInset);
-
           const circles: SupportBaseCircle[] = roots.map(r => ({
             x: r.transform.pos.x,
             y: r.transform.pos.y,
             r: r.diameter / 2
           }));
 
-          const profile = computeFootprint(circles, { marginMm: dynamicMargin, samplesPerCircle: 24 });
-
-          if (!profile || profile.length < 3) continue;
+          // The raft keeps clear of any model standing on the plate, so the
+          // exported solid matches the viewport (and the slice).
+          const clearance = collectModelPlateFootprint(clearanceTargets, raftBandTopMm(raftSettings));
+          const parts = buildRaftFootprintMeshes({ circles, raft: raftSettings, clearance });
+          if (!parts.baseMesh && parts.footprint.length === 0) continue;
 
           const raftGroup = new THREE.Group();
           raftGroup.name = 'Raft';
 
-          if (raftSettings.bottomMode === 'solid') {
-            const baseMesh = generateChamferedBase(profile, {
-              thickness: raftSettings.thickness,
-              chamferAngle: raftSettings.chamferAngle
-            });
-            raftGroup.add(baseMesh);
-          }
+          if (parts.baseMesh) raftGroup.add(parts.baseMesh);
 
           if (raftSettings.bottomMode === 'line') {
             const nodes2d = roots.map((r) => new THREE.Vector2(r.transform.pos.x, r.transform.pos.y));
-            const hasBorderRing = !!profile && profile.length >= 3;
+            const hasBorderRing = parts.footprint.length > 0;
             const edgePairs = buildLineRaftEdgePairs(nodes2d, {
               hasBorderRing,
               keepFactor: 8,
@@ -1133,7 +1029,14 @@ export class ExportManager {
 
             const beamHeight = Math.max(0.01, raftSettings.lineHeightMm);
 
-            const unionEdges: Array<[THREE.Vector2, THREE.Vector2]> = edgePairs.map(([a, b]) => [nodes2d[a], nodes2d[b]]);
+            // Beams a model on the plate is in the way of are never drawn: cutting them
+    // would leave severed ends to close up again, and two clusters either side of
+    // a model should stay two clusters.
+    const unionEdges: Array<[THREE.Vector2, THREE.Vector2]> = filterLineRaftEdges(
+      edgePairs.map(([a, b]) => [nodes2d[a], nodes2d[b]]),
+      inflateModelPlateClearance(clearance),
+      raftSettings.lineWidthMm,
+    );
             const unionMesh = generateUnionedLineRaftMesh(unionEdges, {
               widthMm: raftSettings.lineWidthMm,
               heightMm: beamHeight,
@@ -1145,9 +1048,9 @@ export class ExportManager {
             if (unionHasGeometry) {
               raftGroup.add(unionMesh);
             } else {
-              for (const [a, b] of edgePairs) {
-                const start = new THREE.Vector3(nodes2d[a].x, nodes2d[a].y, 0);
-                const end = new THREE.Vector3(nodes2d[b].x, nodes2d[b].y, 0);
+              for (const [a, b] of unionEdges) {
+                const start = new THREE.Vector3(a.x, a.y, 0);
+                const end = new THREE.Vector3(b.x, b.y, 0);
                 const beam = generateChamferedBeam(start, end, {
                   widthMm: raftSettings.lineWidthMm,
                   heightMm: beamHeight,
@@ -1156,30 +1059,9 @@ export class ExportManager {
                 raftGroup.add(beam);
               }
             }
-
           }
 
-          const shouldRenderWall = raftSettings.wallEnabled;
-          if (shouldRenderWall) {
-            const useCrenels = raftSettings.crenulationSpacing > 0 && raftSettings.crenulationGapWidth > 0;
-            const thickness = raftSettings.bottomMode === 'line' ? Math.max(0.01, raftSettings.lineHeightMm) : raftSettings.thickness;
-            const wallMesh = useCrenels
-              ? generateCrenelatedWallManual(profile, {
-                  wallHeight: raftSettings.wallHeight,
-                  wallThickness: raftSettings.wallThickness,
-                  crenulationGapWidth: raftSettings.crenulationGapWidth,
-                  crenulationSpacing: raftSettings.crenulationSpacing,
-                  thickness,
-                  chamferAngle: raftSettings.chamferAngle,
-                })
-              : generatePerimeterWall(profile, {
-                  wallHeight: raftSettings.wallHeight,
-                  wallThickness: raftSettings.wallThickness,
-                  thickness
-                });
-
-            if (wallMesh) raftGroup.add(wallMesh);
-          }
+          if (parts.wallMesh) raftGroup.add(parts.wallMesh);
 
           raftGroup.updateMatrixWorld(true);
           exportObjects.push(raftGroup);
@@ -1204,7 +1086,7 @@ export class ExportManager {
 
     // ── Browser / fallback: JS-based serializers ──
     if (options.format === '3mf') {
-      return this.export3mf(exportObjects, options.filename, null, false);
+      return this.export3mf(exportObjects, options.filename);
     }
 
     const stlBytes = this.buildBinaryStl(exportObjects);
@@ -1270,7 +1152,6 @@ export class ExportManager {
     await this.yieldToBrowserFrame();
 
     const supportSnapshot = getSnapshot();
-    const kickstandSnapshot = getKickstandSnapshot();
 
     const scopedModelIds = new Set((sceneContext?.models ?? []).map((model) => model.id));
     const hasScopedModelFilter = scopedModelIds.size > 0;
@@ -1278,26 +1159,19 @@ export class ExportManager {
     const supports = hasScopedModelFilter
       ? buildScopedSupportExportDocument(
           supportSnapshot,
-          kickstandSnapshot,
           scopedModelIds,
           'dragonfruit-voxl-export',
         )
       : buildSupportExportFromStores(
           supportSnapshot,
-          kickstandSnapshot,
           'dragonfruit-voxl-export',
         );
 
     if (!options.includeSupports) {
-      supports.roots = [];
-      supports.trunks = [];
-      supports.branches = [];
-      supports.leaves = [];
-      supports.twigs = [];
-      supports.sticks = [];
-      supports.braces = [];
-      supports.knots = [];
-      supports.kickstands = [];
+      // Every collection the format declares, walked rather than listed, so an
+      // export asked to leave supports out leaves out all of them.
+      const emptyDocument = supports as unknown as Record<string, unknown>;
+      for (const key of SUPPORT_COLLECTION_KEYS) emptyDocument[key] = [];
     }
 
     // Post-C the writer is fed from the chunk store, so `meshBytesMap` stays
@@ -1339,6 +1213,7 @@ export class ExportManager {
             meshModifiers?: ModelMeshModifiers;
             isSupportGeometry?: boolean;
             linkGroupId?: string;
+            classification?: MeshHealthReport;
             mesh: {
               mode: 'embedded-file';
               fileName: string;
@@ -1362,6 +1237,15 @@ export class ExportManager {
               });
               if (resolvedChunk.stale) staleModelIds.add(model.id);
             }
+
+            // Baked mesh classification (VOXL V2.4): the model/support split the
+            // session already knows, persisted so a reload does not re-run the
+            // classifier over the same triangles. Omitted for a stale chunk —
+            // those bytes are one bake behind the geometry the report describes,
+            // so its boundary would not address them.
+            const classification = staleModelIds.has(model.id)
+              ? undefined
+              : model.geometry.meshDefects?.nativeRepairReport;
 
             const origChunk = meshChunkStore.lastCommitted(model.id, 'original');
             if (origChunk) {
@@ -1422,6 +1306,7 @@ export class ExportManager {
               meshModifiers: resolveModelMeshModifiers(model),
               isSupportGeometry: model.isSupportGeometry,
               linkGroupId: model.linkGroupId,
+              classification,
               mesh: {
                 mode: 'embedded-file',
                 fileName: `${this.normalizeExportFilenameBase(model.name || 'model')}.stl`,
@@ -1467,7 +1352,6 @@ export class ExportManager {
     const supportsCacheKey = chunkCache
       ? [
           snapshotToken(supportSnapshot),
-          snapshotToken(kickstandSnapshot),
           options.includeSupports ? 'S1' : 'S0',
           hasScopedModelFilter ? [...scopedModelIds].sort().join(',') : '*',
         ].join('|')

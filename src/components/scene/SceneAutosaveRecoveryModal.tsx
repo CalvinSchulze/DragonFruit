@@ -4,7 +4,7 @@ import React from 'react';
 import { useLingui } from '@lingui/react';
 import { msg } from '@lingui/core/macro';
 import { Trans } from '@lingui/react/macro';
-import { AlertTriangle, ArchiveRestore, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArchiveRestore, Trash2 } from 'lucide-react';
 import { useEscapeToClose } from '@/hotkeys/useEscapeToClose';
 
 type Props = {
@@ -37,6 +37,24 @@ export function SceneAutosaveRecoveryModal({ savedAt, voxlPath, origin, onRestor
       d.getDate() === now.getDate();
     return sameDay ? d.toLocaleTimeString(i18n.locale) : d.toLocaleString(i18n.locale);
   }, [savedAt, i18n.locale]);
+
+  // Where recovery actually found the payload. Silent when the origin is
+  // unknown: an empty subtitle beats inventing a location the user can't check.
+  const originLabel = React.useMemo(() => {
+    if (origin === 'sidecar') {
+      return _(msg({
+        message: 'Recovered from beside your project file',
+        comment: 'Subtitle of the autosave recovery dialog: the copy DragonFruit writes next to the saved project.',
+      }));
+    }
+    if (origin === 'recovery-dir') {
+      return _(msg({
+        message: 'Recovered from the app data folder',
+        comment: 'Subtitle of the autosave recovery dialog: the fallback location used when no project file was saved yet.',
+      }));
+    }
+    return null;
+  }, [origin, _]);
 
   const handleRestore = async () => {
     setBusy('restore');
@@ -73,7 +91,7 @@ export function SceneAutosaveRecoveryModal({ savedAt, voxlPath, origin, onRestor
       >
         {/* Header */}
         <div
-          className="flex items-center justify-between gap-4 border-b px-5 py-4"
+          className="flex items-center gap-4 border-b px-5 py-4"
           style={{ borderColor: 'var(--border-subtle)' }}
         >
           <div className="flex min-w-0 items-center gap-3">
@@ -91,26 +109,13 @@ export function SceneAutosaveRecoveryModal({ savedAt, voxlPath, origin, onRestor
               <h2 className="text-base font-semibold leading-tight" style={{ color: 'var(--text-strong)' }}>
                 <Trans>Unsaved Scene Found</Trans>
               </h2>
-              <p className="mt-0.5 text-[11px] leading-snug" style={{ color: 'var(--text-muted)' }}>
-                <Trans>DragonFruit autosaved a scene at {formattedDate}</Trans>
-              </p>
+              {originLabel ? (
+                <p className="mt-0.5 truncate text-[11px] leading-snug" style={{ color: 'var(--text-muted)' }} title={voxlPath ?? undefined}>
+                  {originLabel}
+                </p>
+              ) : null}
             </div>
           </div>
-
-          <button
-            type="button"
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors"
-            style={{
-              borderColor: 'var(--border-subtle)',
-              background: 'var(--surface-1)',
-              color: 'var(--text-muted)',
-            }}
-            aria-label={_(msg`Dismiss`)}
-            disabled={busy !== 'none'}
-            onClick={() => { void handleDiscard(); }}
-          >
-            <X className="w-4 h-4" />
-          </button>
         </div>
 
         {/* Body */}
@@ -119,41 +124,48 @@ export function SceneAutosaveRecoveryModal({ savedAt, voxlPath, origin, onRestor
             <Trans>It looks like DragonFruit quit before you saved your last session. You can restore the autosaved scene or discard it and start fresh.</Trans>
           </p>
 
-          <div
-            className="rounded-lg border px-3 py-2.5"
-            style={{
-              borderColor: 'var(--border-subtle)',
-              background: 'color-mix(in srgb, var(--surface-1), black 8%)',
-            }}
-          >
-            <div className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
-              <Trans>Last autosave</Trans>
+          <div className="grid grid-cols-2 gap-2">
+            <div
+              className="rounded-lg border px-3 py-2.5"
+              style={{
+                borderColor: 'var(--border-subtle)',
+                background: 'color-mix(in srgb, var(--surface-1), black 8%)',
+              }}
+            >
+              <div className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+                <Trans>Last autosave</Trans>
+              </div>
+              <div className="mt-1 text-sm font-semibold leading-tight" style={{ color: 'var(--text-strong)' }}>
+                {formattedDate}
+              </div>
             </div>
-            <div className="mt-1 text-sm font-semibold leading-tight" style={{ color: 'var(--text-strong)' }}>
-              {formattedDate}
-            </div>
-            {voxlPath && (
-              <>
-                <div className="mt-2.5 text-[11px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
-                  {origin === 'sidecar'
-                    ? _(msg`Saved beside your project`)
-                    : _(msg`Saved in the recovery folder`)}
+            {voxlPath ? (
+              <div
+                className="rounded-lg border px-3 py-2.5"
+                style={{
+                  borderColor: 'var(--border-subtle)',
+                  background: 'color-mix(in srgb, var(--surface-1), black 8%)',
+                }}
+              >
+                <div className="text-[11px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+                  <Trans>Name</Trans>
                 </div>
-                <div
-                  className="mt-1 break-all text-[11px] leading-snug"
-                  style={{ color: 'var(--text-muted)' }}
-                  title={voxlPath}
-                >
-                  {voxlPath}
+                <div className="mt-1 truncate text-sm font-semibold leading-tight" style={{ color: 'var(--text-strong)' }} title={voxlPath}>
+                  {voxlPath.split(/[\\/]/).pop() || voxlPath}
                 </div>
-              </>
-            )}
+              </div>
+            ) : null}
           </div>
 
-          <div className="flex shrink-0 items-center justify-end gap-2 pt-1">
+          <div className="grid grid-cols-2 gap-2 pt-1">
             <button
               type="button"
-              className="ui-button ui-button-secondary !h-9 px-3 text-xs inline-flex items-center gap-1.5"
+              className="ui-button !h-9 w-full px-3 text-xs inline-flex items-center justify-center gap-1.5"
+              style={{
+                borderColor: 'color-mix(in srgb, #ef4444, var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, #ef4444, var(--surface-1) 86%)',
+                color: 'var(--danger)',
+              }}
               disabled={busy !== 'none'}
               onClick={() => { void handleDiscard(); }}
             >
@@ -162,7 +174,7 @@ export function SceneAutosaveRecoveryModal({ savedAt, voxlPath, origin, onRestor
             </button>
             <button
               type="button"
-              className="ui-button !h-9 px-3 text-xs inline-flex items-center gap-1.5"
+              className="ui-button !h-9 w-full px-3 text-xs inline-flex items-center justify-center gap-1.5"
               style={{
                 borderColor: 'color-mix(in srgb, #22c55e, var(--border-subtle) 45%)',
                 background: 'color-mix(in srgb, #22c55e, var(--surface-1) 86%)',
@@ -172,7 +184,7 @@ export function SceneAutosaveRecoveryModal({ savedAt, voxlPath, origin, onRestor
               onClick={() => { void handleRestore(); }}
             >
               <ArchiveRestore className="h-3.5 w-3.5" />
-              <Trans>Restore Scene</Trans>
+              <Trans>Restore</Trans>
             </button>
           </div>
         </div>

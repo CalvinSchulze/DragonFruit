@@ -700,10 +700,11 @@ export function LocalBackupsSettingsTab() {
     background: 'var(--accent-secondary-action-bg-92)',
   };
   const dangerActionStyle92: React.CSSProperties = {
-    color: 'color-mix(in srgb, var(--danger), var(--text-strong) 22%)',
-    borderColor: 'color-mix(in srgb, var(--danger), var(--border-subtle) 45%)',
-    background: 'color-mix(in srgb, var(--danger), var(--surface-1) 88%)',
+    color: 'var(--danger)',
+    borderColor: 'color-mix(in srgb, #ef4444, var(--border-subtle) 45%)',
+    background: 'color-mix(in srgb, #ef4444, var(--surface-1) 86%)',
   };
+  const isUsingDefault = !defaultDirectory || selectedDirectory.trim().toLowerCase() === defaultDirectory.trim().toLowerCase();
 
   return (
     <div className="space-y-3">
@@ -720,61 +721,66 @@ export function LocalBackupsSettingsTab() {
           </div>
         </div>
 
-        <div className="mt-2 rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
-          {loadingStatus ? (
-            <div className="text-xs inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              <Trans>Loading backup status…</Trans>
-            </div>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Default directory</Trans></div>
-                <div className="mt-1 text-xs font-medium break-all" style={{ color: 'var(--text-strong)' }}>
-                  {defaultDirectory || <Trans>Resolving...</Trans>}
-                </div>
-              </div>
-
-              <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Selected directory</Trans></div>
-                <div className="mt-1 text-xs font-medium break-all" style={{ color: 'var(--text-strong)' }}>
-                  {selectedDirectory || <Trans>Not selected</Trans>}
-                </div>
-              </div>
-
-              <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Last backup on disk</Trans></div>
-                <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
-                  {stateUpdatedAt ? new Date(stateUpdatedAt).toLocaleString() : <Trans>Never</Trans>}
-                </div>
-              </div>
-
-              <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Last local sync</Trans></div>
-                <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
-                  {lastLocalSyncAt ? new Date(lastLocalSyncAt).toLocaleString() : <Trans>Never</Trans>}
-                </div>
+        {loadingStatus ? (
+          <div className="mt-2 text-xs inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Trans>Loading backup status…</Trans>
+          </div>
+        ) : (
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Default directory</Trans></div>
+              <div className="mt-1 text-xs font-medium break-all" style={{ color: 'var(--text-strong)' }}>
+                {defaultDirectory || <Trans>Resolving...</Trans>}
               </div>
             </div>
-          )}
-        </div>
 
-        <div className="mt-2 grid gap-2 sm:grid-cols-3">
-          <button
-            type="button"
-            onClick={() => { void handleUseDefaultDirectory(); }}
-            disabled={!defaultDirectory || busy !== 'none'}
-            className="ui-button ui-button-secondary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
-          >
-            <CheckCircle2 className="h-4 w-4" />
-            <Trans>Use Default Path</Trans>
-          </button>
+            <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Selected directory</Trans></div>
+              <div className="mt-1 text-xs font-medium break-all" style={{ color: 'var(--text-strong)' }}>
+                {selectedDirectory || <Trans>Not selected</Trans>}
+              </div>
+            </div>
+
+            <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Last backup on disk</Trans></div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
+                {stateUpdatedAt ? new Date(stateUpdatedAt).toLocaleString() : <Trans>Never</Trans>}
+              </div>
+            </div>
+
+            <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}><Trans>Last local sync</Trans></div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
+                {lastLocalSyncAt ? new Date(lastLocalSyncAt).toLocaleString() : <Trans>Never</Trans>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className={isUsingDefault ? 'mt-2 grid gap-2 sm:grid-cols-2' : 'mt-2 grid gap-2 sm:grid-cols-3'}>
+          {!isUsingDefault && defaultDirectory ? (
+            <button
+              type="button"
+              onClick={() => { void handleUseDefaultDirectory(); }}
+              disabled={busy !== 'none'}
+              className="ui-button ui-button-secondary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            >
+              <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--text-muted)' }} />
+              <Trans>Use Default Path</Trans>
+            </button>
+          ) : null}
 
           <button
             type="button"
             onClick={() => { void handleChooseDirectory(); }}
             disabled={busy !== 'none'}
-            className="ui-button ui-button-secondary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            className="ui-button !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+              background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+              color: 'var(--accent)',
+            }}
           >
             {busy === 'choose-directory' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderOpen className="h-4 w-4" />}
             <Trans>Choose Folder</Trans>
@@ -784,7 +790,12 @@ export function LocalBackupsSettingsTab() {
             type="button"
             onClick={() => { void handleRevealDirectory(); }}
             disabled={!selectedDirectory || busy !== 'none'}
-            className="ui-button ui-button-secondary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            className="ui-button !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-secondary), var(--border-subtle) 45%)',
+              background: 'color-mix(in srgb, var(--accent-secondary), var(--surface-1) 86%)',
+              color: 'var(--accent-secondary)',
+            }}
           >
             {busy === 'reveal' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FolderOpen className="h-4 w-4" />}
             <Trans>Open Folder</Trans>
@@ -818,7 +829,12 @@ export function LocalBackupsSettingsTab() {
               type="button"
               onClick={() => { void runSync(); }}
               disabled={busy !== 'none' || !selectedDirectory}
-              className="ui-button ui-button-primary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+              className="ui-button !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+                color: 'var(--accent)',
+              }}
             >
               {busy === 'sync' ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
               <Trans>Backup Now</Trans>
@@ -917,18 +933,17 @@ export function LocalBackupsSettingsTab() {
             </button>
           </div>
 
-          <div className="mt-2">
-            <div className="max-h-64 overflow-auto rounded-md border custom-scrollbar" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-              {historyItems.length === 0 ? (
-                <div className="px-3 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {hasAnySync
-                    ? <Trans>No history snapshots found in this folder.</Trans>
-                    : <Trans>No snapshots yet. Run &quot;Backup Now&quot; to create your first local snapshot.</Trans>}
-                </div>
-              ) : (
-                <ul className="p-1.5 space-y-1.5">
+          <div className="mt-2 max-h-64 overflow-auto custom-scrollbar">
+            {historyItems.length === 0 ? (
+              <div className="px-3 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                {hasAnySync
+                  ? <Trans>No history snapshots found in this folder.</Trans>
+                  : <Trans>No snapshots yet. Run &quot;Backup Now&quot; to create your first local snapshot.</Trans>}
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
                   {historyItems.map((item) => (
-                    <li key={item.id} className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+                    <li key={item.id} className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
                       <button
                         type="button"
                         onClick={() => { void handleViewHistory(item.id); }}
@@ -966,7 +981,6 @@ export function LocalBackupsSettingsTab() {
                 </ul>
               )}
             </div>
-          </div>
         </div>
       </section>
 
@@ -992,7 +1006,11 @@ export function LocalBackupsSettingsTab() {
             <button
               type="button"
               className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
-              style={dangerActionStyle92}
+              style={{
+                borderColor: 'color-mix(in srgb, #ef4444, var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, #ef4444, var(--surface-1) 86%)',
+                color: 'var(--danger)',
+              }}
               disabled={busy !== 'none'}
               onClick={() => {
                 const id = confirmDeleteId;

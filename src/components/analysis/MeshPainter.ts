@@ -436,7 +436,6 @@ export function applyTintAll(
   const pos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
   const col = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
   if (!pos || !col) return;
-  const arrPos = pos.array as Float32Array;
   const arrCol = col.array as ColorStorageArray;
   const useByteColors = isByteColorBuffer(col);
   const tmpColor = new THREE.Color();

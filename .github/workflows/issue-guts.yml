@@ -1,0 +1,70 @@
+name: Issue guts
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to classify
+        required: true
+        type: number
+      dry_run:
+        description: Only show the probabilities, don't label
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: issue-guts-${{ github.event.issue.number || inputs.issue }}
+
+jobs:
+  classify:
+    name: Classify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      labels: ${{ steps.jev.outputs.labels }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Ask Jev
+        id: jev
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NUMBER: ${{ github.event.issue.number || inputs.issue }}
+        run: node .github/guts/classify.mjs "$NUMBER"
+
+  label:
+    name: Label
+    needs: classify
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Apply labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number || inputs.issue }}
+          LABELS: ${{ needs.classify.outputs.labels }}
+        run: |
+          # Labels can only be areas from .github/guts/areas.json, so creating missing ones is safe.
+          IFS=, read -ra wanted <<< "$LABELS"
+          for l in "${wanted[@]}"; do
+            gh label create "$l" --color c5def5 2>/dev/null || true
+          done
+          gh issue edit "$NUMBER" --add-label "$LABELS"

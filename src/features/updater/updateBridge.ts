@@ -101,6 +101,7 @@ export async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
  */
 export async function fetchUpdateInfo(
   channel?: UpdateChannel,
+  allowSameVersion = false,
 ): Promise<UpdateInfo | null> {
   if (!isTauriAvailable()) {
     return null;
@@ -109,7 +110,7 @@ export async function fetchUpdateInfo(
     console.log('[updater] Linux ships as a Flatpak — skipping the update check');
     return null;
   }
-  console.log('[updater] fetchUpdateInfo called, channel:', channel ?? 'null (Rust default)');
+  console.log('[updater] fetchUpdateInfo called, channel:', channel ?? 'null (Rust default)', 'allowSameVersion:', allowSameVersion);
   try {
     const result = await invoke<{
       updateAvailable: boolean;
@@ -117,8 +118,7 @@ export async function fetchUpdateInfo(
       currentVersion: string;
       body: string | null;
       date: string | null;
-    } | null>('check_updates', { channel: channel ?? null });
-
+    } | null>('check_updates', { channel: channel ?? null, allow_same_version: allowSameVersion, allowSameVersion: allowSameVersion } as unknown as Record<string, unknown>);
     console.log('[updater] check_updates result:', result);
 
     if (!result?.updateAvailable) return null;

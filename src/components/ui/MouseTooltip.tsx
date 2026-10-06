@@ -49,7 +49,7 @@ export function MouseTooltip({
     return (
         <div
             ref={tooltipRef}
-            className={`fixed pointer-events-none z-50 ${className}`}
+            className={`fixed pointer-events-none z-[9999] ${className}`}
             style={{ left, top }}
         >
             {children}

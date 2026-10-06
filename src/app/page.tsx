@@ -20,6 +20,7 @@ import { PrintingPanelStack } from '@/components/organisms/panels/PrintingPanelS
 import { SharedPanelStack } from '@/components/organisms/panels/SharedPanelStack';
 import { TopBar } from '@/components/layout/TopBar';
 import { NotificationStack } from '@/components/organisms/NotificationStack';
+import { SystemNotificationStack } from '@/components/organisms/SystemNotificationStack';
 import { EditorLayout } from '@/components/templates/EditorLayout';
 import { PrintingPreviewPane } from '@/components/organisms/PrintingPreviewPane';
 import { DiagnosticsModals } from '@/components/organisms/modals/DiagnosticsModals';
@@ -27,9 +28,14 @@ import { PrintingModals } from '@/components/organisms/modals/PrintingModals';
 import { SceneFileModals } from '@/components/organisms/modals/SceneFileModals';
 import { ModifierModals } from '@/components/organisms/modals/ModifierModals';
 import { MeshRepairModals } from '@/components/organisms/modals/MeshRepairModals';
+import {
+  getThemeMeshHighlightColors,
+  subscribeToThemeMeshHighlightColors,
+} from '@/components/settings/themeCustomizations';
 import { useMirrorManager } from '@/features/mirror/useMirrorManager';
 import { useArrangeManager } from '@/features/scene/arrange/useArrangeManager';
 import { useHolePunchManager } from '@/features/hole-punching/useHolePunchManager';
+import { type MeshShaderType } from '@/features/shaders/mesh';
 import { useHollowingManager } from '@/features/hollowing/useHollowingManager';
 import type { HollowingManagerDeps } from '@/features/hollowing/useHollowingManager';
 import { useModifierApplyOverlay } from '@/features/hollowing/useModifierApplyOverlay';
@@ -57,9 +63,10 @@ import {
 } from '@/components/controls/ArrangePanel';
 import { DuplicatePanel, type DuplicateLayoutMode } from '../components/controls/DuplicatePanel';
 import { VisualSettingsPanel } from '@/components/controls/VisualSettingsPanel';
+import { contactEndpointsFor, countSupportCollections, knotHostId, spanKnotHostType, getSupportTypeDescriptor, MODEL_ID_COLLECTION_KEYS, SUPPORT_COLLECTION_KEYS, SUPPORT_TYPES, updateSupportEntity, type SupportCollectionKey, type SupportTypeId } from '@/supports/supportTypeRegistry';
 import { LayerSlider } from '@/components/controls/LayerSlider';
 import { PrintingLayerGpuPreview } from '@/components/controls/PrintingLayerGpuPreview';
-import { SupportSidebar } from '@/supports/Settings';
+import { SupportSidebar } from '@/supports/Settings/SupportSidebar';
 import { useLeafPlacementState } from '@/supports/SupportTypes/Leaf/leafPlacementState';
 import { ExportPanel } from '@/features/export/components/ExportPanel';
 import { ExportManager } from '@/features/export/logic/ExportManager';
@@ -72,12 +79,14 @@ import { ScanProgressBar } from '@/components/scene/ScanProgressBar';
 import { SliceMetricsDebugModal } from '@/features/slicing/components/SliceMetricsDebugModal';
 import { MeshSmoothingSettingsPanel } from '@/features/mesh-smoothing/MeshSmoothingSettingsPanel';
 import { MeshSmoothingBrushCursor } from '@/features/mesh-smoothing/MeshSmoothingBrushCursor';
+import { SupportBlockerCursor } from '@/features/support-blockers/SupportBlockerCursor';
 import {
   dispatchCutModelAction,
   dispatchDeleteModelAction,
   resolveModelActionTargetIds,
 } from '@/features/scene/modelActionTargets';
-import { buildLiftDropUpdates } from '@/features/scene/selectionLiftDrop';
+import { buildLiftDropUpdates, getModelLowestWorldZ } from '@/features/scene/selectionLiftDrop';
+import { dropOverlaySupportedFormats, dropOverlayUnsupportedFormats } from '@/features/scene/sceneImportMessages';
 import {
   buildCenterSelectionUpdates,
   buildSelectionPositionUpdates,
@@ -86,7 +95,12 @@ import {
 import { HollowingPanel, type HollowingPanelState } from '../features/hollowing';
 import { HolePunchPanel, type HolePunchPanelState } from '../features/hole-punching/HolePunchPanel';
 import { PlaceOnFaceTool } from '@/features/placeOnFace/PlaceOnFaceTool';
-import { OrganicCutTool, OrganicCutTenonGizmo, useOrganicCutSession } from '@/features/organicCut';
+import {
+  OrganicCutOverlay,
+  OrganicCutTenonGizmoMount,
+  OrganicCutToolMount,
+  useOrganicCutSession,
+} from '@/features/organicCut';
 import { MirrorTool } from '@/features/mirror/MirrorTool';
 import { bakeWithFlips } from '@/features/mirror/logic/bakeWithFlips';
 import { buildMirrorSupportTransforms, reflectTransformAcrossWorldAxis } from '@/features/mirror/logic/buildMirrorSupportTransforms';
@@ -94,8 +108,7 @@ import type { MirrorAxis } from '@/features/mirror/types';
 import type { GeometryWithBounds } from '@/hooks/useStlGeometry';
 import { RtspRelayCanvasPlayer } from '@/components/monitoring/RtspRelayCanvasPlayer';
 import { IconButton, Toast, ToastViewport } from '@/components/atoms';
-import { EditorContextMenu, ORGANIC_CUT_ADD_WAYPOINT_ITEM, ORGANIC_CUT_DELETE_WAYPOINT_ITEM, type EditorMenuAction } from '@/components/ui/EditorContextMenu';
-import { MouseTooltip } from '@/components/ui/MouseTooltip';
+import { EditorContextMenu, type EditorMenuAction } from '@/components/ui/EditorContextMenu';
 import { StructuredDialogModal } from '@/components/ui/StructuredDialogModal';
 import { quaternionFromGlobalEuler } from '@/utils/rotation';
 import { DiagnosticsModal } from '@/components/modals/DiagnosticsModal';
@@ -116,6 +129,7 @@ import { initializeBVH } from '@/utils/bvh';
 import {
   computeApproxModelWorldBounds,
   computePreciseModelWorldBounds,
+  isBoundsDisjointFromVolume,
   isBoundsOutsideVolume,
   shouldUsePreciseBoundsForTransform,
 } from '@/utils/modelBounds';
@@ -187,7 +201,6 @@ import {
   getHomeSupportCollectionsSnapshot,
   getHomeKickstandCollectionsSnapshot,
   type HomeSupportCollectionsSnapshot,
-  type HomeKickstandCollectionsSnapshot,
 } from '@/features/supports/supportSnapshotHelpers';
 import {
   EXPORT_THUMBNAIL_RENDER_OPTIONS_STORAGE_KEY,
@@ -226,6 +239,7 @@ import {
 // Domain Features
 import { useSceneCollectionManager, SCENE_SLICED, pushSceneSlicedMarker, getSceneSnapshotRegistryBytes } from '@/features/scene/useSceneCollectionManager';
 import { useSupportHistoryHandlers } from '@/supports/history/useSupportHistoryHandlers';
+import { useNativeSpaceMouseLifecycle } from '@/components/scene/camera/useNativeSpaceMouseLifecycle';
 import { useSlicingManager } from '@/features/slicing/useSlicingManager';
 import { useTransformManager } from '@/features/transform/useTransformManager';
 import { useIslandManager } from '@/volumeAnalysis/IslandScan/useIslandManager';
@@ -233,7 +247,11 @@ import { useIslandManager } from '@/volumeAnalysis/IslandScan/useIslandManager';
 // agents/Claude/20260613-1404-Implementation-dev-islands-islands-panel-...md.
 import { useIslands } from '@/volumeAnalysis/Islands/useIslands';
 import { IslandsPanel } from '@/components/controls/IslandsPanel';
-import { AutoSupportPanel, getAutoSupportBusy, subscribeAutoSupportBusy, autoSupportDrivingScan } from '@/components/controls/AutoSupportPanel';
+import { AutoSupportPanel, getAutoSupportBusy, subscribeAutoSupportBusy, autoSupportDrivingScan, getAutoSupportProgress, subscribeAutoSupportProgress } from '@/components/controls/AutoSupportPanel';
+import { installPerfConsoleAPI } from '@/supports/PlacementLogic/Pathfinding/pathfindingPerf';
+import { getUnappliedModifiers } from '@/features/mesh-modifiers/unappliedModifiers';
+import type { UnappliedModifierAction } from '@/components/organisms/modals/ModifierModals';
+import { AutoRotationPanel, getOrientationBusy, subscribeOrientationBusy, OrientElapsed } from '@/components/controls/AutoRotationPanel';
 import { IslandOverlay } from '@/components/scene/IslandOverlay';
 import { useSupportInteractionManager } from '@/features/supports/useSupportInteractionManager';
 import { useUndoRedoHotkeys } from '@/hotkeys/useUndoRedoHotkeys';
@@ -318,29 +336,46 @@ import {
   getSavedUvToolsSettings,
   resolveUvToolsExecutablePath,
 } from '@/components/settings/uvToolsPreferences';
-import { subscribe as subscribeSupportState, getSnapshot as getSupportSnapshot, toggleSegmentCurve, transformSupportsForModel, updateTrunk, updateBranch, updateTwig, updateStick } from '@/supports/state';
-import {
-  getKickstandSnapshot,
-  subscribeToKickstandStore,
-} from '@/supports/SupportTypes/Kickstand/kickstandStore';
+import { subscribe as subscribeSupportState, findShaftOwnerOfSegment, getSnapshot as getSupportSnapshot, getModelIdForSupportEntityId, getSupportEntity, resolveDeclaredHosts, toggleSegmentCurve, transformSupportsForModel, updateKnot, getSelectedId, getSelectedCategory } from '@/supports/state';
 import { bracePlacementStore } from '@/supports/SupportTypes/Brace/bracePlacementState';
-import { splitShaft, splitBranchShaft, splitTwigShaft, splitStickShaft } from '@/supports/SupportPrimitives/Joint/jointUtils';
+import { splitSupportShaft } from '@/supports/SupportPrimitives/Joint/jointUtils';
+import { resolveSegmentEndpoints, type ShaftEntity } from '@/supports/SupportPrimitives/Knot/segmentEndpoints';
+import { knotFields } from '@/supports/interaction/shared/selection/selectedIdsByType';
+import type { KnotSplitRemap } from '@/supports/SupportPrimitives/Knot/knotUtils';
 import { captureSupportEditSnapshot, pushSupportEditHistory } from '@/supports/history/supportEditHistory';
-import { getRaftSettings, subscribeToRaftStore } from '@/supports/Rafts/Crenelated/RaftState';
+
+/**
+ * Apply knot re-anchor patches from a segment split BEFORE the host update runs,
+ * so attached branches/leaves keep their world position when a joint is inserted
+ * (issue #204). Mirror of the helper in useJointCreation for the context-menu
+ * "Add joint" path.
+ */
+function applyJointSplitKnotRemaps(remaps: KnotSplitRemap[]) {
+    if (remaps.length === 0) return;
+    const knots = getSupportSnapshot().knots;
+    for (const remap of remaps) {
+        const knot = knots[remap.knotId];
+        if (!knot) continue;
+        updateKnot({ ...knot, parentShaftId: remap.parentShaftId, t: remap.t });
+    }
+}
+import { getRaftSettings, getRaftSettingsForModel, subscribeToRaftStore } from '@/supports/Rafts/Crenelated/RaftState';
 import { computeFootprint } from '@/supports/Rafts/Crenelated/geometry/computeFootprint';
+import { computeRaftFootprintPolygons, raftBandTopMm } from '@/supports/Rafts/Crenelated/geometry/computeRaftFootprint';
+import { collectModelPlateFootprint } from '@/supports/Rafts/Crenelated/geometry/modelPlateFootprint';
+import { isUntrimmedFootprint } from '@/supports/Rafts/Crenelated/geometry/generateRaftFromFootprint';
+import { polygonSetAreaMm2 } from '@/supports/Rafts/Crenelated/geometry/polygonSet2d';
 import { computeRaftOuterBoundary } from '@/supports/Rafts/Crenelated/geometry/computeRaftOuterBoundary';
 import type { SupportBaseCircle } from '@/supports/Rafts/Crenelated/RaftTypes';
-import { getTrunkSegmentEndpoints, getBranchSegmentEndpoints } from '@/supports/SupportPrimitives/Knot/knotUtils';
 import { getFinalSocketPosition } from '@/supports/SupportPrimitives/ContactCone/contactConeUtils';
 import { calculateDiskThickness } from '@/supports/SupportPrimitives/ContactDisk/contactDiskUtils';
 import { getBezierPointAtT } from '@/supports/Curves/BezierUtils';
-import { getSupportsForModel } from '@/supports/PlacementLogic/SupportModelLinker';
+import { getSupportsForModel, modelIdOfParentShaft } from '@/supports/PlacementLogic/SupportModelLinker';
 import { buildProjectedCrossSectionZRange } from '@/features/slicing/rasterLayerZipExport';
 import { resolveCompositeMaterialLabel } from '@/utils/materialLabel';
 
-import { type MeshShaderType } from '@/features/shaders/mesh';
 import type { ModelTransform, TransformMode } from '@/hooks/useModelTransform';
-import type { SupportMode } from '@/supports/types';
+import type { Segment, SupportMode } from '@/supports/types';
 import { VoxlSizeLimitError } from '@/features/scene/voxl';
 import {
   useSceneAutosave,
@@ -355,11 +390,11 @@ import { MeshRepairReportModal } from '@/components/scene/MeshRepairReportModal'
 import { MeshRepairConfirmModal } from '@/components/scene/MeshRepairConfirmModal';
 import { ManifoldWarningModal } from '@/components/modals/ManifoldWarningModal';
 
-
 import { IslandScanWorkflowCard } from '@/volumeAnalysis/IslandScan/workflow/IslandScanWorkflowCard';
 import { IslandVolumesHierarchyCard } from '@/volumeAnalysis/IslandVolumes/components/IslandVolumesHierarchyCard';
 import { uploadPrintJobWithProgress, type PluginUploadProgressEvent } from '@/features/plugins/pluginUploadBridge';
 import { pluginNetworkFetch } from '@/utils/pluginNetworkBridge';
+import { clonePlainData } from '@/utils/plainDataClone';
 import { fetchRtspRelayStatus } from '@/utils/rtspRelayBridge';
 import {
   hollowApplyFromCapturedSource,
@@ -592,6 +627,9 @@ export default function Home() {
   // for the lifetime of a scene renderer. Otherwise Ctrl+Z depends on which
   // render branch happens to be mounted.
   useSupportHistoryHandlers();
+  // The navlib session is process-wide and must outlive the camera controllers
+  // (which unmount for the intro and every Home reset) — see the hook.
+  useNativeSpaceMouseLifecycle();
   // Applies the user's saved UI scale via native webview zoom (no-op in browser).
   useUiScale();
   // 1. Scene & Geometry (Multi-Model)
@@ -625,6 +663,12 @@ export default function Home() {
     // SSR: no localStorage → the manifest default (disabled).
     () => false,
   );
+  const autoRotationExperimentEnabled = React.useSyncExternalStore(
+    subscribeToExperiments,
+    () => isExperimentEnabled('auto-rotation'),
+    // SSR: no localStorage → the manifest default (disabled).
+    () => false,
+  );
   const sceneFileExtensionLabelsValue = useSceneFileExtensionLabels();
   const sceneAutosaveSettings = React.useSyncExternalStore(
     subscribeToSceneAutosaveSettings,
@@ -635,6 +679,13 @@ export default function Home() {
     subscribeToWorkspaceCameraSettings,
     getWorkspaceCameraSettingsSnapshot,
     getWorkspaceCameraSettingsServerSnapshot,
+  );
+  // Selection/hover tint is a theme setting now, so the viewport follows the
+  // applied theme instead of a scene-level appearance override.
+  const themeMeshHighlightColors = React.useSyncExternalStore(
+    subscribeToThemeMeshHighlightColors,
+    getThemeMeshHighlightColors,
+    getThemeMeshHighlightColors,
   );
   const activePrinterProfile = React.useMemo(() => getActivePrinterProfile(profileState), [profileState]);
   const activeMaterialProfile = React.useMemo(() => getActiveMaterialProfile(profileState), [profileState]);
@@ -662,7 +713,6 @@ export default function Home() {
     persistActiveModelModifiers: () => {},
     setPendingModifierResetAction: () => {},
     setInteriorView: () => {},
-    setSessionShaderOverride: () => {},
     computeAutoHolePunchDepthMmForGeometry: () => 0,
     setHolePunchState: () => {},
     setHolePunchPlacements: () => {},
@@ -795,14 +845,11 @@ export default function Home() {
     description?: string;
     supportBefore?: ReturnType<typeof getSupportSnapshot>;
     supportAfter?: ReturnType<typeof getSupportSnapshot>;
-    kickstandBefore?: ReturnType<typeof getKickstandSnapshot>;
-    kickstandAfter?: ReturnType<typeof getKickstandSnapshot>;
   } | null>(null);
   const pendingSelectionPositionHistoryRef = React.useRef<{
     targetIdsKey: string;
     beforeTransforms: Array<{ id: string; transform: ModelTransform }>;
     supportBefore: ReturnType<typeof getSupportSnapshot>;
-    kickstandBefore: ReturnType<typeof getKickstandSnapshot>;
   } | null>(null);
   const transformHistoryCommitRequestedRef = React.useRef(false);
   const transformHistoryCommitNonceRef = React.useRef(0);
@@ -922,6 +969,7 @@ export default function Home() {
     selectedModelIds: scene.selectedModelIds,
     enabled: sceneAutosaveEnabled,
     debounceMs: sceneAutosaveSettings.debounceMs,
+    cooldownMs: sceneAutosaveSettings.cooldownMs,
     capMs: sceneAutosaveSettings.capMs,
     // **Finding N3.** This used to read `preferredOverwriteScenePathRef.current`
     // — a ref, read during render. Mutating a ref does not re-render, so the
@@ -938,6 +986,20 @@ export default function Home() {
     // downgrade the now-2.2 file.
     onSceneFormatUpgraded: React.useCallback(() => setSceneFormatChunked(true), []),
   });
+
+  // Expose flush for updater's pre-restart autosave (force trigger before Update & Restart)
+  React.useEffect(() => {
+    (window as unknown as Record<string, unknown>).__df_flushAutosave = flushAutosave;
+    return () => { delete (window as unknown as Record<string, unknown>).__df_flushAutosave; };
+  }, [flushAutosave]);
+
+  // `window.__dfPerf` for support-pathfinding timings. Installed here, not from
+  // `pathfindingPerf` itself: that module is in the auto-support worker's import
+  // graph, and a module-scope DOM side effect kills the worker before it can
+  // receive a request.
+  React.useEffect(() => {
+    installPerfConsoleAPI();
+  }, []);
 
   /**
    * User-facing scene-save failure (Ph0.1 sub-phase D).
@@ -1024,6 +1086,9 @@ export default function Home() {
     setPrintingMonitorError,
     handleExportSuccess,
     showOperationError,
+    orientationToast,
+    isOrientationToastVisible,
+    showOrientationToast,
   } = useEditorToasts({
     isSceneSaveInProgress,
     isPreSliceSceneSaveInProgress,
@@ -1031,7 +1096,6 @@ export default function Home() {
     sceneImportReport: scene.sceneImportReport,
   });
 
-  const [sessionShaderOverride, setSessionShaderOverride] = React.useState<MeshShaderType | null>(null);
   const [interiorView, setInteriorView] = React.useState(false);
   const isSupportSpotlightHoldActive = useActionActive('SUPPORTS', 'TEMP_SPOTLIGHT_HOLD');
   const [allowPrepareWithoutPrinter, setAllowPrepareWithoutPrinter] = React.useState(false);
@@ -1079,7 +1143,6 @@ export default function Home() {
   const [isManualRepairing, setIsManualRepairing] = React.useState(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = React.useState(false);
   const [isSliceMetricsDebugOpen, setIsSliceMetricsDebugOpen] = React.useState(false);
-
 
   const [isHistoryDebugOpen, setIsHistoryDebugOpen] = React.useState(false);
   const [supportsInfoModelId, setSupportsInfoModelId] = React.useState<string | null>(null);
@@ -1166,7 +1229,6 @@ export default function Home() {
     deps: printingPreviewDepsRef,
   });
 
-
   const defaultHolePunchState = React.useMemo<HolePunchPanelState>(() => ({
     radiusMm: 2.0,
     radiusYMm: undefined,
@@ -1203,7 +1265,8 @@ export default function Home() {
   const printingInFlightBaseResinMlRef = React.useRef<Map<string, Promise<number | null>>>(new Map());
   const lastCompletedResinEstimateSignatureRef = React.useRef<string>('');
   const [showUnappliedHolePunchModal, setShowUnappliedHolePunchModal] = React.useState(false);
-  const unappliedHolePunchResolveRef = React.useRef<((action: 'apply' | 'skip') => void) | null>(null);
+  const [unappliedModifierPromptPurpose, setUnappliedModifierPromptPurpose] = React.useState<'export' | 'supports'>('export');
+  const unappliedHolePunchResolveRef = React.useRef<((action: UnappliedModifierAction) => void) | null>(null);
   const [showPrintingResliceModal, setShowPrintingResliceModal] = React.useState(false);
   const [showSliceCompletedModal, setShowSliceCompletedModal] = React.useState(false);
   const [sliceCompletedModalData, setSliceCompletedModalData] = React.useState<{
@@ -1525,7 +1588,6 @@ export default function Home() {
     : 'Processing 1 model';
   const [modifierApplyOverlayElapsedSec, setModifierApplyOverlayElapsedSec] = React.useState(0);
 
-
   const modifierApplyOverlayContent = React.useMemo(() => {
     if (isApplyingHollowing && pendingHolePunchAutoApplyModelId) {
       return {
@@ -1577,7 +1639,6 @@ export default function Home() {
       ],
     };
   }, [finalizingOverlayContent, isApplyingBlockersHollowing, isApplyingHolePunch, isApplyingHollowing, pendingHolePunchAutoApplyModelId]);
-
 
   React.useEffect(() => {
     if (!showModifierApplyBlockingOverlay) {
@@ -1634,7 +1695,7 @@ export default function Home() {
     trackSupportCollectionsInHome ? getHomeSupportCollectionsSnapshot : getEmptySupportSnapshot,
   );
   const kickstandStateSnapshot = React.useSyncExternalStore(
-    subscribeToKickstandStore,
+    subscribeSupportState,
     trackSupportCollectionsInHome ? getHomeKickstandCollectionsSnapshot : getEmptyKickstandSnapshot,
     trackSupportCollectionsInHome ? getHomeKickstandCollectionsSnapshot : getEmptyKickstandSnapshot,
   );
@@ -1847,50 +1908,6 @@ export default function Home() {
     };
   }, []);
 
-  const activeSupportEntityCounts = React.useMemo(() => {
-    const modelId = scene.activeModelId;
-    if (!modelId) {
-      return {
-        trunks: 0,
-        branches: 0,
-        leaves: 0,
-        twigs: 0,
-        sticks: 0,
-        braces: 0,
-        roots: 0,
-        knots: 0,
-        kickstands: 0,
-      };
-    }
-
-    const trunks = Object.values(supportStateSnapshot.trunks).filter((item) => item.modelId === modelId).length;
-    const branches = Object.values(supportStateSnapshot.branches).filter((item) => item.modelId === modelId).length;
-    const leaves = Object.values(supportStateSnapshot.leaves).filter((item) => item.modelId === modelId).length;
-    const twigs = Object.values(supportStateSnapshot.twigs).filter((item) => item.modelId === modelId).length;
-    const sticks = Object.values(supportStateSnapshot.sticks).filter((item) => item.modelId === modelId).length;
-    const braces = Object.values(supportStateSnapshot.braces).filter((item) => item.modelId === modelId).length;
-    const roots = Object.values(supportStateSnapshot.roots).filter((item) => item.modelId === modelId).length;
-    const knots = Object.values(supportStateSnapshot.knots).filter((item) => {
-      const parent = item.parentShaftId;
-      const trunk = supportStateSnapshot.trunks[parent];
-      if (trunk) return trunk.modelId === modelId;
-      const branch = supportStateSnapshot.branches[parent];
-      if (branch) return branch.modelId === modelId;
-      const twig = supportStateSnapshot.twigs[parent];
-      if (twig) return twig.modelId === modelId;
-      const stick = supportStateSnapshot.sticks[parent];
-      if (stick) return stick.modelId === modelId;
-      if (parent.startsWith('braceSegment:')) {
-        const braceId = parent.slice('braceSegment:'.length);
-        return supportStateSnapshot.braces[braceId]?.modelId === modelId;
-      }
-      return false;
-    }).length;
-    const kickstands = Object.values(kickstandStateSnapshot.kickstands).filter((item) => item.modelId === modelId).length;
-
-    return { trunks, branches, leaves, twigs, sticks, braces, roots, knots, kickstands };
-  }, [kickstandStateSnapshot.kickstands, scene.activeModelId, supportStateSnapshot.braces, supportStateSnapshot.branches, supportStateSnapshot.knots, supportStateSnapshot.leaves, supportStateSnapshot.roots, supportStateSnapshot.sticks, supportStateSnapshot.trunks, supportStateSnapshot.twigs]);
-
   const transformDebugStats = React.useMemo(() => {
     const activeModel = scene.models.find((m) => m.id === scene.activeModelId) ?? null;
     const storeTransform = activeModel?.transform ?? null;
@@ -1982,19 +1999,9 @@ export default function Home() {
         lastPushApplied: historyDebug.lastPushApplied,
         lastAt: historyDebug.lastAt,
       },
-      supportCounts: {
-        trunks: countRecordEntries(supportStateSnapshot.trunks),
-        branches: countRecordEntries(supportStateSnapshot.branches),
-        leaves: countRecordEntries(supportStateSnapshot.leaves),
-        twigs: countRecordEntries(supportStateSnapshot.twigs),
-        sticks: countRecordEntries(supportStateSnapshot.sticks),
-        braces: countRecordEntries(supportStateSnapshot.braces),
-        roots: countRecordEntries(supportStateSnapshot.roots),
-        knots: countRecordEntries(supportStateSnapshot.knots),
-        kickstands: countRecordEntries(kickstandStateSnapshot.kickstands),
-      },
+      supportCounts: countSupportCollections(supportStateSnapshot),
     };
-  }, [kickstandStateSnapshot.kickstands, scene.activeModelId, scene.models, supportDragGroupRef, supportStateSnapshot.braces, supportStateSnapshot.branches, supportStateSnapshot.knots, supportStateSnapshot.leaves, supportStateSnapshot.roots, supportStateSnapshot.sticks, supportStateSnapshot.trunks, supportStateSnapshot.twigs, transformDebugTick, transformMgr.transform]);
+  }, [scene.activeModelId, scene.models, supportDragGroupRef, supportStateSnapshot, transformDebugTick, transformMgr.transform]);
 
   const supportDebugStats = React.useMemo(() => {
     const snapTarget = bracePlacementSnapshot.snapTarget;
@@ -2021,6 +2028,8 @@ export default function Home() {
         externalHoverModelId?: string | null;
         effectiveHoverModelId?: string | null;
         sceneHoveredSupportId?: string | null;
+        hoveredSupportModelId?: string | null;
+        hoveredSupportOwnedByActiveModel?: boolean | null;
         marqueeHoveredSupportId?: string | null;
         rawHoveredCategory?: string | null;
         rawHoveredId?: string | null;
@@ -2048,7 +2057,7 @@ export default function Home() {
         : null,
       braceSnapKind: snapTarget?.kind ?? null,
       braceSnapSegmentId: snappedSegmentId,
-      braceSnapLeafId: snapTarget?.kind === 'leaf' ? (snapTarget.leafId ?? null) : null,
+      braceSnapPrimitiveId: snapTarget?.entityId ?? null,
       previewStart: preview?.start ?? null,
       previewEnd: preview?.end ?? null,
       hoveredVsSnapMismatch,
@@ -2065,6 +2074,15 @@ export default function Home() {
       externalHoverModelId: supportRendererDebug?.externalHoverModelId ?? null,
       effectiveHoverModelId: supportRendererDebug?.effectiveHoverModelId ?? null,
       sceneHoveredSupportId: supportRendererDebug?.sceneHoveredSupportId ?? null,
+      // Ownership of the hovered support: which model it is bound to, and
+      // whether that is the model currently active. This is the association the
+      // import bridge establishes (payload modelId -> every support's modelId);
+      // nothing else in the UI surfaces it.
+      hoveredSupportModelId: getModelIdForSupportEntityId(supportRendererDebug?.sceneHoveredSupportId),
+      hoveredSupportOwnedByActiveModel: (() => {
+        const owner = getModelIdForSupportEntityId(supportRendererDebug?.sceneHoveredSupportId);
+        return owner ? owner === scene.activeModelId : null;
+      })(),
       marqueeHoveredSupportId: supportRendererDebug?.marqueeHoveredSupportId ?? null,
       rawHoveredCategory: supportRendererDebug?.rawHoveredCategory ?? null,
       rawHoveredId: supportRendererDebug?.rawHoveredId ?? null,
@@ -2073,23 +2091,18 @@ export default function Home() {
     };
   }, [bracePlacementSnapshot, supportShaftHoverDebug.point, supportShaftHoverDebug.segmentId, transformDebugTick]);
 
+  // Reads the live stores directly: Home's subscribed snapshot is an empty
+  // stub in support mode (trackSupportCollectionsInHome), so counting from it
+  // would silently report zero exactly where orient needs the truth. In
+  // prepare mode the stub mirrors the store, so existing callers are unaffected.
+  // Summed over every modelId-bearing collection, so a model carrying only one
+  // type still reports its supports.
   const getSupportPrimitiveCountForModel = React.useCallback((modelId: string | null | undefined) => {
     if (!modelId) return 0;
 
-    const supportIds = getSupportsForModel(supportStateSnapshot, modelId);
-    const kickstandCount = Object.values(kickstandStateSnapshot.kickstands)
-      .filter((kickstand) => kickstand.modelId === modelId)
-      .length;
-
-    return supportIds.roots.length
-      + supportIds.trunks.length
-      + supportIds.branches.length
-      + supportIds.braces.length
-      + supportIds.leaves.length
-      + supportIds.twigs.length
-      + supportIds.sticks.length
-      + kickstandCount;
-  }, [kickstandStateSnapshot.kickstands, supportStateSnapshot]);
+    const supportIds = getSupportsForModel(getSupportSnapshot(), modelId);
+    return MODEL_ID_COLLECTION_KEYS.reduce((total, key) => total + supportIds[key].length, 0);
+  }, []);
 
   const requestDestructiveTransformSupportDeletion = React.useCallback((operationLabel: string) => {
     if (scene.mode !== 'prepare') return true;
@@ -2122,6 +2135,23 @@ export default function Home() {
     return false;
   }, [requestDestructiveTransformSupportDeletion]);
 
+  const requestOrientSupportDeletionWithContinuation = React.useCallback((onContinue: () => void) => {
+    // Unlike the prepare-mode destructive transforms, orient runs from support
+    // mode, so there is no mode gate — placed supports always force the dialog.
+    if (!scene.activeModelId) return true;
+    if (pendingDestructiveTransform) return false;
+    const supportCount = getSupportPrimitiveCountForModel(scene.activeModelId);
+    if (supportCount <= 0) return true;
+    setPendingDestructiveTransform({
+      modelId: scene.activeModelId,
+      modelName: (scene.activeModel?.name ?? scene.activeModelId).trim(),
+      supportCount,
+      operationLabel: 'Auto Orient',
+    });
+    pendingDestructiveTransformContinueRef.current = onContinue;
+    return false;
+  }, [getSupportPrimitiveCountForModel, pendingDestructiveTransform, scene]);
+
   const handleConfirmDestructiveTransform = React.useCallback(() => {
     const pending = pendingDestructiveTransform;
     if (!pending) return;
@@ -2143,7 +2173,6 @@ export default function Home() {
     pendingDestructiveTransformContinueRef.current = null;
     setPendingDestructiveTransform(null);
   }, []);
-
 
   React.useLayoutEffect(() => {
     const element = modelStatsCardContainerRef.current;
@@ -2174,20 +2203,27 @@ export default function Home() {
   const { getHotkey } = useHotkeyConfig();
   const supportSpotlightHoldHotkey = getHotkey('SUPPORTS', 'TEMP_SPOTLIGHT_HOLD');
 
-  const supportMenuSnapshot = React.useSyncExternalStore(
+  // The menu reads the selection and the braces collection, so it subscribes to
+  // those rather than to the snapshot object. The snapshot is rebuilt on every
+  // store write, a support hover included, and this is the app root: the whole
+  // page and the scene canvas re-rendered for a hover that changed neither. The
+  // collections snapshot is identity-cached, so an edit still invalidates it.
+  const supportMenuSelectedId = React.useSyncExternalStore(subscribeSupportState, getSelectedId, getSelectedId);
+  const supportMenuSelectedCategory = React.useSyncExternalStore(subscribeSupportState, getSelectedCategory, getSelectedCategory);
+  const supportMenuCollections = React.useSyncExternalStore(
     subscribeSupportState,
-    getSupportSnapshot,
-    getSupportSnapshot,
+    getHomeSupportCollectionsSnapshot,
+    getHomeSupportCollectionsSnapshot,
   );
 
   const supportMenuSelection = React.useMemo(() => {
-    const selectedId = supportMenuSnapshot.selectedId;
+    const selectedId = supportMenuSelectedId;
     return {
       selectedId,
-      selectedCategory: supportMenuSnapshot.selectedCategory,
-      isBraceSelected: Boolean(selectedId && supportMenuSnapshot.braces[selectedId]),
+      selectedCategory: supportMenuSelectedCategory,
+      isBraceSelected: Boolean(selectedId && supportMenuCollections.braces[selectedId]),
     };
-  }, [supportMenuSnapshot]);
+  }, [supportMenuSelectedId, supportMenuSelectedCategory, supportMenuCollections]);
 
   const supportsCanToggleCurve = React.useMemo(() => {
     if (scene.mode !== 'support') return false;
@@ -2195,24 +2231,15 @@ export default function Home() {
     return supportMenuSelection.isBraceSelected;
   }, [scene.mode, supportMenuSelection.isBraceSelected, supportMenuSelection.selectedCategory, supportMenuSelection.selectedId]);
 
+  // The same lookup the add-joint handler runs, so the menu item is offered
+  // exactly when the action would succeed.
   const supportContextMenuSegmentOwner = React.useMemo(() => {
     const segmentId = editorContextMenuSupportTarget?.segmentId;
-    if (!segmentId) return null;
-
-    const trunk = Object.values(supportMenuSnapshot.trunks).find((item) => item.segments.some((segment) => segment.id === segmentId));
-    if (trunk) return { kind: 'trunk' as const, id: trunk.id };
-
-    const branch = Object.values(supportMenuSnapshot.branches).find((item) => item.segments.some((segment) => segment.id === segmentId));
-    if (branch) return { kind: 'branch' as const, id: branch.id };
-
-    const twig = Object.values(supportMenuSnapshot.twigs).find((item) => item.segments.some((segment) => segment.id === segmentId));
-    if (twig) return { kind: 'twig' as const, id: twig.id };
-
-    const stick = Object.values(supportMenuSnapshot.sticks).find((item) => item.segments.some((segment) => segment.id === segmentId));
-    if (stick) return { kind: 'stick' as const, id: stick.id };
-
-    return null;
-  }, [editorContextMenuSupportTarget?.segmentId, supportMenuSnapshot.branches, supportMenuSnapshot.sticks, supportMenuSnapshot.trunks, supportMenuSnapshot.twigs]);
+    return segmentId ? findShaftOwnerOfSegment(segmentId) : null;
+    // The collections are read through a helper, not named here: the lookup is
+    // the invalidation this memo needs, and a support edit is what moves it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorContextMenuSupportTarget?.segmentId, supportMenuCollections]);
 
   const supportsCanAddJoint = React.useMemo(() => {
     if (scene.mode !== 'support') return false;
@@ -2291,7 +2318,6 @@ export default function Home() {
   }, [clearPrintingLayerPreviewUrls]);
 
 
-
   const handlePrintingLayerPreviewGenerated = React.useCallback((payload: {
     layerIndex: number;
     totalLayers: number;
@@ -2346,7 +2372,6 @@ export default function Home() {
     slicedArtifactProfileFingerprintRef.current = null;
     setPrintingReadyPlateId(null);
   }, [clearPrintingLayerPreviewUrls]);
-
 
   React.useEffect(() => {
     if (scene.mode !== 'printing') return;
@@ -2790,6 +2815,37 @@ export default function Home() {
     scene.models,
   ]);
 
+  /**
+   * Models that contribute to a slice. A model that only partly overlaps the
+   * build volume keeps its closed surface; the raster crops the filled spans.
+   * Exclusion is only for models with no overlap at all.
+   */
+  const sliceableModelIdSet = React.useMemo(() => {
+    const visibleModels = scene.models.filter((model) => model.visible);
+    if (visibleModels.length === 0) return new Set<string>();
+    if (!resinBuildVolumeBounds) return new Set(visibleModels.map((model) => model.id));
+
+    const BUILD_VOLUME_BOUNDS_EPS_MM = 0.01;
+    const sliceableModelIds = new Set<string>();
+
+    for (const model of visibleModels) {
+      const approxBounds = computeApproxModelWorldBounds(model.geometry, model.transform);
+      if (isBoundsDisjointFromVolume(approxBounds, resinBuildVolumeBounds, BUILD_VOLUME_BOUNDS_EPS_MM)) continue;
+      // Rotated bounding boxes can overlap even when the actual mesh does not.
+      const bounds = isBoundsOutsideVolume(approxBounds, resinBuildVolumeBounds, BUILD_VOLUME_BOUNDS_EPS_MM)
+        ? computePreciseModelWorldBounds(model.geometry, model.transform)
+        : approxBounds;
+      if (!isBoundsDisjointFromVolume(bounds, resinBuildVolumeBounds, BUILD_VOLUME_BOUNDS_EPS_MM)) {
+        sliceableModelIds.add(model.id);
+      }
+    }
+
+    return sliceableModelIds;
+  }, [
+    resinBuildVolumeBounds,
+    scene.models,
+  ]);
+
   const visibleResinModels = React.useMemo(() => {
     return scene.models.filter((model) => model.visible && resinInBoundsModelIdSet.has(model.id));
   }, [resinInBoundsModelIdSet, scene.models]);
@@ -2962,7 +3018,7 @@ export default function Home() {
         topDiameterByRootId.set(trunk.rootId, firstDiameter);
       }
     }
-    for (const kickstand of Object.values(kickstandStateSnapshot.kickstands)) {
+    for (const kickstand of Object.values(supportStateSnapshot.kickstands)) {
       const firstDiameter = kickstand.profile.terminalStartDiameterMm
         || kickstand.segments[0]?.diameter
         || kickstand.profile.bodyDiameterMm;
@@ -2989,78 +3045,45 @@ export default function Home() {
       supportMl += mm3ToMl(diskMm3 + coneMm3 + capSphereMm3);
     };
 
+    // One pass: kickstand roots are a view of state.roots, so walking both
+    // counted every kickstand root twice.
     for (const root of Object.values(supportStateSnapshot.roots)) {
       addRootVolume(root);
     }
-    for (const root of Object.values(kickstandStateSnapshot.roots)) {
-      addRootVolume(root);
-    }
 
-    for (const trunk of Object.values(supportStateSnapshot.trunks)) {
-      if (!visibleModelIds.has(trunk.modelId)) continue;
-      const root = supportStateSnapshot.roots[trunk.rootId];
-      for (let i = 0; i < trunk.segments.length; i += 1) {
-        const seg = trunk.segments[i];
-        const endpoints = getTrunkSegmentEndpoints(trunk, seg, i, root);
-        if (!endpoints) continue;
-        supportMl += segmentVolumeMl(seg, endpoints.start, endpoints.end);
+    // Every type with segments or contacts, by its declared segments and
+    // contacts. A brace has neither (its shaft is a curve between two knots),
+    // so the guard below skips it and it is summed on its own below.
+    for (const descriptor of SUPPORT_TYPES) {
+      if (!descriptor.hasSegments && descriptor.contactFields.length === 0) continue;
+
+      const collection = supportStateSnapshot[descriptor.location.key as SupportCollectionKey] as unknown as Record<string, {
+        id: string; typeId?: SupportTypeId; modelId: string; segments?: Segment[]; rootId?: string; parentKnotId?: string; hostKnotId?: string;
+      }>;
+
+      for (const entity of Object.values(collection ?? {})) {
+        if (!visibleModelIds.has(entity.modelId)) continue;
+
+        const hosts = {
+          root: descriptor.ownsRoot ? supportStateSnapshot.roots[entity.rootId ?? ''] : undefined,
+          hostKnot: supportStateSnapshot.knots[entity.parentKnotId ?? entity.hostKnotId ?? ''],
+        };
+
+        const segments = entity.segments ?? [];
+        for (let i = 0; i < segments.length; i += 1) {
+          const endpoints = resolveSegmentEndpoints(entity as ShaftEntity, segments[i], i, hosts);
+          if (!endpoints) continue;
+          supportMl += segmentVolumeMl(segments[i], endpoints.start, endpoints.end);
+        }
+
+        for (const { kind, field } of contactEndpointsFor(descriptor.id)) {
+          const contact = (entity as unknown as Record<string, unknown>)[field];
+          if (!contact) continue;
+          supportMl += kind === 'disk'
+            ? contactDiskVolumeMl(contact as Parameters<typeof contactDiskVolumeMl>[0])
+            : contactConeVolumeMl(contact as Parameters<typeof contactConeVolumeMl>[0]);
+        }
       }
-      if (trunk.contactCone) {
-        supportMl += contactConeVolumeMl(trunk.contactCone);
-      }
-    }
-
-    for (const branch of Object.values(supportStateSnapshot.branches)) {
-      if (!visibleModelIds.has(branch.modelId)) continue;
-      const parentKnot = supportStateSnapshot.knots[branch.parentKnotId];
-      for (let i = 0; i < branch.segments.length; i += 1) {
-        const seg = branch.segments[i];
-        const endpoints = getBranchSegmentEndpoints(branch, seg, i, parentKnot);
-        if (!endpoints) continue;
-        supportMl += segmentVolumeMl(seg, endpoints.start, endpoints.end);
-      }
-      if (branch.contactCone) {
-        supportMl += contactConeVolumeMl(branch.contactCone);
-      }
-    }
-
-    for (const leaf of Object.values(supportStateSnapshot.leaves)) {
-      if (!visibleModelIds.has(leaf.modelId)) continue;
-      if (leaf.contactCone) {
-        supportMl += contactConeVolumeMl(leaf.contactCone);
-      }
-    }
-
-    for (const twig of Object.values(supportStateSnapshot.twigs)) {
-      if (!visibleModelIds.has(twig.modelId)) continue;
-
-      for (let i = 0; i < twig.segments.length; i += 1) {
-        const seg = twig.segments[i];
-        const start = i === 0
-          ? (seg.bottomJoint?.pos ?? twig.contactDiskA.pos)
-          : (twig.segments[i - 1].topJoint?.pos ?? seg.bottomJoint?.pos ?? twig.contactDiskA.pos);
-        const end = seg.topJoint?.pos ?? twig.contactDiskB.pos;
-        supportMl += segmentVolumeMl(seg, start, end);
-      }
-
-      supportMl += contactDiskVolumeMl(twig.contactDiskA);
-      supportMl += contactDiskVolumeMl(twig.contactDiskB);
-    }
-
-    for (const stick of Object.values(supportStateSnapshot.sticks)) {
-      if (!visibleModelIds.has(stick.modelId)) continue;
-
-      for (let i = 0; i < stick.segments.length; i += 1) {
-        const seg = stick.segments[i];
-        const start = i === 0
-          ? (seg.bottomJoint?.pos ?? stick.contactConeA.pos)
-          : (stick.segments[i - 1].topJoint?.pos ?? seg.bottomJoint?.pos ?? stick.contactConeA.pos);
-        const end = seg.topJoint?.pos ?? stick.contactConeB.pos;
-        supportMl += segmentVolumeMl(seg, start, end);
-      }
-
-      supportMl += contactConeVolumeMl(stick.contactConeA);
-      supportMl += contactConeVolumeMl(stick.contactConeB);
     }
 
     for (const brace of Object.values(supportStateSnapshot.braces)) {
@@ -3073,28 +3096,6 @@ export default function Home() {
         ? sampleBezierLengthMm(startKnot.pos, brace.curve.controlPoint1, brace.curve.controlPoint2, endKnot.pos, brace.curve.resolution ?? 16)
         : distanceMm(startKnot.pos, endKnot.pos);
       supportMl += mm3ToMl(cylinderVolumeMm3(Math.max(0.001, brace.profile.diameter / 2), length));
-    }
-
-    for (const kickstand of Object.values(kickstandStateSnapshot.kickstands)) {
-      if (!visibleModelIds.has(kickstand.modelId)) continue;
-
-      for (let i = 0; i < kickstand.segments.length; i += 1) {
-        const seg = kickstand.segments[i];
-        const root = kickstandStateSnapshot.roots[kickstand.rootId];
-        const hostKnot = kickstandStateSnapshot.knots[kickstand.hostKnotId];
-        const rootTopPos = root
-          ? {
-              x: root.transform.pos.x,
-              y: root.transform.pos.y,
-              z: root.transform.pos.z + Math.max(0, root.diskHeight) + Math.max(0, root.coneHeight),
-            }
-          : null;
-        const start = i === 0
-          ? (seg.bottomJoint?.pos ?? rootTopPos ?? { x: 0, y: 0, z: 0 })
-          : (kickstand.segments[i - 1].topJoint?.pos ?? seg.bottomJoint?.pos ?? rootTopPos ?? { x: 0, y: 0, z: 0 });
-        const end = seg.topJoint?.pos ?? hostKnot?.pos ?? start;
-        supportMl += segmentVolumeMl(seg, start, end);
-      }
     }
 
     let raftMl = 0;
@@ -3110,30 +3111,42 @@ export default function Home() {
         });
       }
 
+      // The raft is trimmed where a model stands on the plate, so the estimate
+      // measures the same footprint the viewport and the slicer build.
+      const clearance = collectModelPlateFootprint(
+        scene.models.filter((model) => model.visible),
+        raftBandTopMm(raftSettingsSnapshot),
+      );
+
       for (const circles of rootsByModel.values()) {
         if (circles.length === 0) continue;
 
         const thickness = raftSettingsSnapshot.bottomMode === 'line' ? raftSettingsSnapshot.lineHeightMm : raftSettingsSnapshot.thickness;
-        const chamferInset = Math.max(0, thickness) * Math.tan((Math.PI / 180) * (90 - Math.min(90, Math.max(45, raftSettingsSnapshot.chamferAngle))));
-        const wallInset = raftSettingsSnapshot.wallEnabled ? Math.max(0, raftSettingsSnapshot.wallThickness) : 0;
-        const dynamicMargin = 0.2 + Math.max(chamferInset, wallInset);
 
-        const baseProfile = computeFootprint(circles, {
-          marginMm: dynamicMargin,
-          samplesPerCircle: 24,
+        const footprint = computeRaftFootprintPolygons({
+          circles,
+          raft: raftSettingsSnapshot,
+          clearance,
         });
+        if (footprint.length === 0) continue;
 
-        if (!baseProfile || baseProfile.length < 3) continue;
+        const untrimmed = isUntrimmedFootprint(footprint);
+        const baseProfile = untrimmed ? footprint[0].outer : [];
+        const areaMm2 = untrimmed ? polygonAreaMm2(baseProfile) : polygonSetAreaMm2(footprint);
+        const perimeterMm = untrimmed
+          ? polygonPerimeterMm(baseProfile)
+          : footprint.reduce((total, poly) => total + polygonPerimeterMm(poly.outer), 0);
 
-        const areaMm2 = polygonAreaMm2(baseProfile);
         const baseMm3 = raftSettingsSnapshot.bottomMode === 'line'
-          ? (polygonPerimeterMm(baseProfile) * Math.max(0, raftSettingsSnapshot.lineWidthMm) * Math.max(0, raftSettingsSnapshot.lineHeightMm))
+          ? (perimeterMm * Math.max(0, raftSettingsSnapshot.lineWidthMm) * Math.max(0, raftSettingsSnapshot.lineHeightMm))
           : (areaMm2 * Math.max(0, raftSettingsSnapshot.thickness));
 
         let wallMm3 = 0;
         if (raftSettingsSnapshot.wallEnabled && raftSettingsSnapshot.wallHeight > 0 && raftSettingsSnapshot.wallThickness > 0) {
-          const outerProfile = computeRaftOuterBoundary(baseProfile, raftSettingsSnapshot);
-          const wallPerimeterMm = polygonPerimeterMm(outerProfile.length >= 3 ? outerProfile : baseProfile);
+          const outerProfile = untrimmed ? computeRaftOuterBoundary(baseProfile, raftSettingsSnapshot) : [];
+          const wallPerimeterMm = untrimmed && outerProfile.length >= 3
+            ? polygonPerimeterMm(outerProfile)
+            : perimeterMm;
           wallMm3 = wallPerimeterMm * Math.max(0, raftSettingsSnapshot.wallThickness) * Math.max(0, raftSettingsSnapshot.wallHeight);
         }
 
@@ -3145,21 +3158,12 @@ export default function Home() {
   }, [
     resinInBoundsModelIdSet,
     shouldCalculateSupportAndRaftVolumes,
-    computeFootprint,
+    computeRaftFootprintPolygons,
     computeRaftOuterBoundary,
+    isUntrimmedFootprint,
     raftSettingsSnapshot,
     scene.models,
-    kickstandStateSnapshot.knots,
-    kickstandStateSnapshot.roots,
-    kickstandStateSnapshot.kickstands,
-    supportStateSnapshot.braces,
-    supportStateSnapshot.branches,
-    supportStateSnapshot.knots,
-    supportStateSnapshot.leaves,
-    supportStateSnapshot.roots,
-    supportStateSnapshot.sticks,
-    supportStateSnapshot.trunks,
-    supportStateSnapshot.twigs,
+    supportStateSnapshot,
   ]);
 
   React.useEffect(() => {
@@ -3657,7 +3661,6 @@ export default function Home() {
   }, [profileState.printerProfiles]);
 
 
-
   React.useEffect(() => {
     if (allReachabilityProbeTargets.length === 0) return;
 
@@ -3935,8 +3938,6 @@ export default function Home() {
 
 
 
-
-
   const selectedPrinterStateTextNormalized = React.useMemo(() => {
     return String(selectedPrinterMonitorSnapshot?.stateText ?? '').trim().toLowerCase();
   }, [selectedPrinterMonitorSnapshot?.stateText]);
@@ -4009,8 +4010,6 @@ export default function Home() {
 
 
 
-
-
   // Best-effort background cleanup of stale DragonFruit temp artifacts from prior runs.
   React.useEffect(() => {
     void cleanupStalePrintTempArtifacts(3 * 24 * 60 * 60)
@@ -4067,7 +4066,6 @@ export default function Home() {
     };
   }, []);
 
-
   React.useEffect(() => {
     if (!activePrinterProfile || !activeNetworkUiAdapter) {
       setPrintingTargetDeviceId(null);
@@ -4109,7 +4107,6 @@ export default function Home() {
     }
   }, [activeNetworkUiAdapter, activePrinterProfile, printableConnectedPrinterFleet, printerReachabilityByDeviceId, printingTargetDeviceId]);
 
-
   React.useEffect(() => {
     if (!printingUploadDialogOpen || printingUploadDialogStage !== 'processing' || printingDeviceProcessingStartedAtMs == null) {
       setPrintingDeviceProcessingElapsedSec(0);
@@ -4142,20 +4139,9 @@ export default function Home() {
 
 
 
-
-
-
-
-
-
-
-
   // Flush webcam polling/circuit-breaker state on monitor close.
 
-
   // Manage printer monitor webcam lifecycle: disable when monitor closes.
-
-
 
 
 
@@ -4580,10 +4566,29 @@ export default function Home() {
       return;
     }
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+    // Don't show recovery when the app was launched with a scene file (double-click VOXL etc.).
+    // In that case DragonFruit is already in a loading state (pendingStartupSceneHandoff).
+    if (pendingStartupSceneHandoff) {
+      setAutosaveRecovery(null);
+      return;
+    }
 
     let cancelled = false;
     void (async () => {
       try {
+        // If launched with a file, suppress recovery even if the pending flag wasn't yet set
+        // when this effect first ran (race between launch-file fetch and recovery fetch).
+        try {
+          const core = await import('@tauri-apps/api/core');
+          const launchEntries = await core.invoke<unknown[]>('get_launch_scene_files');
+          if (Array.isArray(launchEntries) && launchEntries.length > 0) {
+            if (!cancelled) setAutosaveRecovery(null);
+            return;
+          }
+        } catch {
+          // Non-Tauri or invoke not available — fall through to normal recovery check.
+        }
+
         // Discovery, not a bare manifest read: the payload may be a sidecar
         // beside the project, the generic location, or a legacy `scene.voxl`
         // from before Ph0.1. `resolveAutosaveRecovery` validates that whichever
@@ -4591,6 +4596,11 @@ export default function Home() {
         // never offered for a payload that cannot be restored.
         const candidate = await resolveAutosaveRecovery();
         if (!cancelled && candidate && !candidate.clean) {
+          // Re-check pending handoff after async fetch — it may have become pending while we were fetching.
+          if (pendingStartupSceneHandoff) {
+            setAutosaveRecovery(null);
+            return;
+          }
           setAutosaveRecovery({
             savedAt: candidate.savedAt ?? new Date().toISOString(),
             voxlPath: candidate.voxlPath,
@@ -4605,7 +4615,15 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [sceneAutosaveSettings.recoveryPromptEnabled]);
+  }, [sceneAutosaveSettings.recoveryPromptEnabled, pendingStartupSceneHandoff]);
+
+  // If a launch file arrives after the recovery prompt is already shown, dismiss it
+  // — the app is already loading a scene, so recovery would be a confusing fork.
+  React.useEffect(() => {
+    if (pendingStartupSceneHandoff && autosaveRecovery) {
+      setAutosaveRecovery(null);
+    }
+  }, [pendingStartupSceneHandoff, autosaveRecovery]);
 
   const isDesktopRuntime = React.useCallback(() => {
     if (typeof window === 'undefined') return false;
@@ -4677,8 +4695,16 @@ export default function Home() {
     })();
   }, [closeDesktopWindowNow, saveCurrentSceneNow]);
 
+  // Web runtime only. The desktop build has its own close flow (the
+  // onCloseRequested effect below), which can actually save rather than just
+  // warn. Registering both is what produces Chromium's "Leave site?" prompt on
+  // exit: wry never implemented the beforeunload panel, so this handler was
+  // invisible under WebKitGTK/WKWebView, but CEF shows it — and it fires after
+  // the user already chose Discard, because closeDesktopWindowNow() tears the
+  // webview down with hasUnsavedSceneChangesRef still set.
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (isDesktopRuntime()) return;
 
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!hasUnsavedSceneChangesRef.current) return;
@@ -4690,7 +4716,7 @@ export default function Home() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, []);
+  }, [isDesktopRuntime]);
 
   React.useEffect(() => {
     if (!isDesktopRuntime()) return;
@@ -4745,7 +4771,6 @@ export default function Home() {
   React.useEffect(() => {
     if (!isDesktopRuntime()) return;
     if (desktopWindowRevealRequestedRef.current) return;
-    desktopWindowRevealRequestedRef.current = true;
 
     let cancelled = false;
     let timerId: ReturnType<typeof setTimeout> | null = null;
@@ -4768,6 +4793,11 @@ export default function Home() {
     // a short setTimeout gives the browser time to commit the first full frame.
     timerId = setTimeout(() => {
       if (!cancelled) {
+        // Claim the reveal only once it actually fires: StrictMode runs this
+        // effect, cleans it up and runs it again with refs intact, so a claim
+        // taken up front would make the second run bail out and the splash
+        // would never close.
+        desktopWindowRevealRequestedRef.current = true;
         // Signal the splashscreen to fade out gracefully before revealing.
         import('@tauri-apps/api/event').then(({ emit }) => {
           emit('splash-fade-out').catch(() => {});
@@ -4785,7 +4815,6 @@ export default function Home() {
       }
     };
   }, [isDesktopRuntime]);
-
 
   const performSendToPrinter = React.useCallback(async (targetDevice: PrinterNetworkDevice, selectedMaterialIdOverride?: string) => {
     if (!printingArtifact || !activePrinterProfile) return;
@@ -5107,7 +5136,6 @@ export default function Home() {
     }
   }, [activeNetworkUiAdapter?.pluginId, printingSendBusy]);
 
-
   const handlePrintNow = React.useCallback(async () => {
     if (!activePrinterProfile || !printingTargetDevice) return;
     if (!printingMonitoringAdapter.pluginId || !printingMonitoringAdapter.operations?.start) return;
@@ -5157,10 +5185,6 @@ export default function Home() {
       setPrintingPrintNowBusy(false);
     }
   }, [activePrinterProfile, openPrintingMonitorForTargetDevice, printingMonitoringAdapter.operations, printingMonitoringAdapter.pluginId, printingReadyPlateId, printingTargetDevice]);
-
-
-
-
 
 
 
@@ -5325,19 +5349,13 @@ export default function Home() {
   }, []);
 
   const captureTransformSupportSnapshot = React.useCallback(() => {
-    const supportSnapshot = structuredClone(getSupportSnapshot());
+    const supportSnapshot = clonePlainData(getSupportSnapshot());
     supportSnapshot.selectedId = null;
     supportSnapshot.selectedCategory = null;
     supportSnapshot.hoveredId = null;
     supportSnapshot.hoveredCategory = 'none';
 
-    const kickstandSnapshot = structuredClone(getKickstandSnapshot());
-    kickstandSnapshot.selectedId = null;
-
-    return {
-      support: supportSnapshot,
-      kickstand: kickstandSnapshot,
-    };
+    return { support: supportSnapshot };
   }, []);
 
   const invalidatePendingTransformHistory = React.useCallback((options?: { clearRotateCommit?: boolean }) => {
@@ -5446,14 +5464,10 @@ export default function Home() {
             }
     );
 
-    const supportHistoryOptions = (
-      pending.supportBefore
-      && pending.kickstandBefore
-    )
+    const supportHistoryOptions = pending.supportBefore
       ? {
           includeSupportState: true,
           supportBefore: pending.supportBefore,
-          kickstandBefore: pending.kickstandBefore,
         }
       : undefined;
 
@@ -5571,7 +5585,6 @@ export default function Home() {
   }, [invalidatePendingTransformHistory]);
 
 
-
   const handleNewDeviceDetected = React.useCallback((deviceId: string) => {
     setNewDeviceToast(deviceId);
     setIsNewDeviceToastVisible(true);
@@ -5671,10 +5684,11 @@ export default function Home() {
     };
   }, [cancelPendingHistoryTransformResyncFrames]);
 
-  // Latest "is the Cut tool active" flag, for the right-click-up handler below
-  // (declared here so it precedes that handler; updated once organicCutToolActive
-  // is computed later in the component).
-  const organicCutToolActiveRef = React.useRef(false);
+  // The Cut tool's own right-click menu, reached through a ref because the
+  // handler below is declared long before the cut session exists.
+  const organicCutContextMenuRef = React.useRef<
+    ((event: { clientX: number; clientY: number }) => boolean) | null
+  >(null);
 
   const handleEditorPointerDownCapture = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 2) return;
@@ -5700,28 +5714,11 @@ export default function Home() {
     // No editor menu on the empty-scene welcome screen — there is nothing to act
     // on (unless the clipboard holds a cut/copied model that could be pasted).
     if (!moved && !shouldSuppress && (scene.models.length > 0 || scene.canPasteModel)) {
-      // Cut tool: a hovered waypoint MARKER arms "Delete waypoint"; otherwise a
-      // hovered seam LINE arms "Add waypoint here". Either opens the cut menu
-      // instead of the model/support menu. Marker takes priority over line.
-      if (organicCutToolActiveRef.current) {
-        const markerHover = organicCutMarkerHoverRef.current;
-        if (markerHover != null) {
-          setOrganicCutLineMenu({ kind: 'delete', x: e.clientX, y: e.clientY, index: markerHover });
-          window.setTimeout(() => { rightClickGestureRef.current = null; }, 0);
-          return;
-        }
-        const seamHover = organicCutLineHoverRef.current;
-        if (seamHover) {
-          setOrganicCutLineMenu({
-            kind: 'add',
-            x: e.clientX,
-            y: e.clientY,
-            localPoint: seamHover.localPoint,
-            afterIndex: seamHover.afterIndex,
-          });
-          window.setTimeout(() => { rightClickGestureRef.current = null; }, 0);
-          return;
-        }
+      // Cut tool: a hovered waypoint or seam opens the cut's own menu instead of
+      // the model/support one. The session decides; we only stand down.
+      if (organicCutContextMenuRef.current?.(e)) {
+        window.setTimeout(() => { rightClickGestureRef.current = null; }, 0);
+        return;
       }
       if (scene.mode === 'support' && supportShaftHoverDebug.segmentId && supportShaftHoverDebug.point) {
         setEditorContextMenuSupportTarget({
@@ -5821,7 +5818,7 @@ export default function Home() {
         if (state.selectedCategory === 'segment' && state.selectedId) {
           toggleSegmentCurve(state.selectedId);
         } else if (state.selectedId && state.braces[state.selectedId]) {
-          toggleSegmentCurve(`braceSegment:${state.selectedId}`);
+          toggleSegmentCurve(knotHostId(spanKnotHostType(), state.selectedId));
         }
         break;
       }
@@ -5834,105 +5831,29 @@ export default function Home() {
         const splitTargetPoint = target.point;
         const beforeSnapshot = captureSupportEditSnapshot();
 
-        const trunk = Object.values(state.trunks).find((item) => item.segments.some((segment) => segment.id === segmentId));
-        if (trunk) {
-          const segmentIndex = trunk.segments.findIndex((segment) => segment.id === segmentId);
-          if (segmentIndex >= 0) {
-            const segment = trunk.segments[segmentIndex];
-            const root = state.roots[trunk.rootId];
-            let start = segment.bottomJoint?.pos;
-            if (!start) {
-              if (segmentIndex === 0 && root) {
-                start = {
-                  x: root.transform.pos.x,
-                  y: root.transform.pos.y,
-                  z: root.transform.pos.z + root.diskHeight + root.coneHeight,
-                };
-              } else {
-                start = trunk.segments[segmentIndex - 1]?.topJoint?.pos;
-              }
-            }
+        const owner = findShaftOwnerOfSegment(segmentId);
+        const entity = owner ? getSupportEntity(owner.typeId, owner.id) as ShaftEntity | null : null;
+        if (owner && entity) {
+          const segmentIndex = entity.segments.findIndex((segment) => segment.id === segmentId);
+          const segment = entity.segments[segmentIndex];
+          if (segment) {
+            const descriptor = getSupportTypeDescriptor(owner.typeId);
+            // Read off the declared edges: a kickstand's knot is at its upper
+            // end, so `lower.kind` would hand it none.
+            const hosts = resolveDeclaredHosts(owner.typeId, entity as unknown as Record<string, unknown>);
+            const endpoints = resolveSegmentEndpoints(entity, segment, segmentIndex, hosts);
 
-            const end = segment.topJoint?.pos
-              ?? (trunk.contactCone ? getFinalSocketPosition(trunk.contactCone) : null)
-              ?? (start ? { x: start.x, y: start.y, z: start.z + 10 } : null);
-
-            if (start && end) {
+            if (endpoints) {
+              const { start, end } = endpoints;
               const projected = segment.type === 'bezier'
                 ? projectBezierSplitPoint(start, segment.controlPoint1, segment.controlPoint2, end, splitTargetPoint)
                 : projectSplitPoint(start, end, splitTargetPoint);
-              const updated = splitShaft(trunk, segmentId, projected.point, projected.t, root);
-              updateTrunk(updated);
-              pushSupportEditHistory('Create trunk joint', beforeSnapshot, captureSupportEditSnapshot());
-            }
-          }
-          break;
-        }
-
-        const branch = Object.values(state.branches).find((item) => item.segments.some((segment) => segment.id === segmentId));
-        if (branch) {
-          const segmentIndex = branch.segments.findIndex((segment) => segment.id === segmentId);
-          if (segmentIndex >= 0) {
-            const segment = branch.segments[segmentIndex];
-            const parentKnot = state.knots[branch.parentKnotId];
-            const start = segmentIndex === 0
-              ? (parentKnot?.pos ?? segment.bottomJoint?.pos ?? null)
-              : (branch.segments[segmentIndex - 1]?.topJoint?.pos ?? segment.bottomJoint?.pos ?? null);
-            const end = segment.topJoint?.pos
-              ?? (branch.contactCone ? getFinalSocketPosition(branch.contactCone) : null)
-              ?? (start ? { x: start.x, y: start.y, z: start.z + 5 } : null);
-
-            if (start && end) {
-              const projected = segment.type === 'bezier'
-                ? projectBezierSplitPoint(start, segment.controlPoint1, segment.controlPoint2, end, splitTargetPoint)
-                : projectSplitPoint(start, end, splitTargetPoint);
-              const updated = splitBranchShaft(branch, segmentId, projected.point, projected.t, parentKnot);
-              updateBranch(updated);
-              pushSupportEditHistory('Create branch joint', beforeSnapshot, captureSupportEditSnapshot());
-            }
-          }
-          break;
-        }
-
-        const twig = Object.values(state.twigs).find((item) => item.segments.some((segment) => segment.id === segmentId));
-        if (twig) {
-          const segmentIndex = twig.segments.findIndex((segment) => segment.id === segmentId);
-          if (segmentIndex >= 0) {
-            const segment = twig.segments[segmentIndex];
-            const start = segmentIndex === 0
-              ? (segment.bottomJoint?.pos ?? null)
-              : (twig.segments[segmentIndex - 1]?.topJoint?.pos ?? segment.bottomJoint?.pos ?? null);
-            const end = segment.topJoint?.pos ?? (start ? { x: start.x, y: start.y, z: start.z + 5 } : null);
-
-            if (start && end) {
-              const projected = segment.type === 'bezier'
-                ? projectBezierSplitPoint(start, segment.controlPoint1, segment.controlPoint2, end, splitTargetPoint)
-                : projectSplitPoint(start, end, splitTargetPoint);
-              const updated = splitTwigShaft(twig, segmentId, projected.point, projected.t);
-              updateTwig(updated);
-              pushSupportEditHistory('Create twig joint', beforeSnapshot, captureSupportEditSnapshot());
-            }
-          }
-          break;
-        }
-
-        const stick = Object.values(state.sticks).find((item) => item.segments.some((segment) => segment.id === segmentId));
-        if (stick) {
-          const segmentIndex = stick.segments.findIndex((segment) => segment.id === segmentId);
-          if (segmentIndex >= 0) {
-            const segment = stick.segments[segmentIndex];
-            const start = segmentIndex === 0
-              ? (segment.bottomJoint?.pos ?? null)
-              : (stick.segments[segmentIndex - 1]?.topJoint?.pos ?? segment.bottomJoint?.pos ?? null);
-            const end = segment.topJoint?.pos ?? (start ? { x: start.x, y: start.y, z: start.z + 5 } : null);
-
-            if (start && end) {
-              const projected = segment.type === 'bezier'
-                ? projectBezierSplitPoint(start, segment.controlPoint1, segment.controlPoint2, end, splitTargetPoint)
-                : projectSplitPoint(start, end, splitTargetPoint);
-              const updated = splitStickShaft(stick, segmentId, projected.point, projected.t);
-              updateStick(updated);
-              pushSupportEditHistory('Create stick joint', beforeSnapshot, captureSupportEditSnapshot());
+              const { entity: updated, knotRemaps } = splitSupportShaft(
+                entity, segmentId, projected.point, projected.t, hosts, state.knots,
+              );
+              applyJointSplitKnotRemaps(knotRemaps);
+              updateSupportEntity(owner.typeId, updated);
+              pushSupportEditHistory(`Create ${descriptor.singular} joint`, beforeSnapshot, captureSupportEditSnapshot());
             }
           }
         }
@@ -6200,8 +6121,6 @@ export default function Home() {
 
 
 
-
-
   const formatDebugVec3 = React.useCallback((v: THREE.Vector3 | null | undefined) => {
     if (!v) return 'n/a';
     const f = (n: number) => (Number.isFinite(n) ? n.toFixed(3) : 'NaN');
@@ -6445,7 +6364,6 @@ export default function Home() {
             },
             description: pending?.description,
             supportBefore: beforeSupportSnapshot.support,
-            kickstandBefore: beforeSupportSnapshot.kickstand,
           };
         } else {
           pending.after = {
@@ -6462,7 +6380,6 @@ export default function Home() {
         const pendingAfter = pendingTransformHistoryRef.current;
         if (pendingAfter && pendingAfter.modelId === scene.activeModelId) {
           pendingAfter.supportAfter = afterSupportSnapshot.support;
-          pendingAfter.kickstandAfter = afterSupportSnapshot.kickstand;
         }
 
         if (isDirectTransformPath) {
@@ -6522,30 +6439,22 @@ export default function Home() {
     return false;
   }, []);
 
+  // Every collection, so a scene holding only one type is not reported empty.
   const hasSupportOrRaftGeometry = React.useMemo(() => {
-    return (
-      raftSettingsSnapshot.bottomMode !== 'off'
-      || hasAnyEntries(supportStateSnapshot.roots)
-      || hasAnyEntries(supportStateSnapshot.trunks)
-      || hasAnyEntries(supportStateSnapshot.branches)
-      || hasAnyEntries(supportStateSnapshot.leaves)
-      || hasAnyEntries(supportStateSnapshot.twigs)
-      || hasAnyEntries(supportStateSnapshot.sticks)
-      || hasAnyEntries(supportStateSnapshot.braces)
-      || hasAnyEntries(kickstandStateSnapshot.kickstands)
-    );
-  }, [
-    hasAnyEntries,
-    kickstandStateSnapshot.kickstands,
-    raftSettingsSnapshot.bottomMode,
-    supportStateSnapshot.braces,
-    supportStateSnapshot.branches,
-    supportStateSnapshot.leaves,
-    supportStateSnapshot.roots,
-    supportStateSnapshot.sticks,
-    supportStateSnapshot.trunks,
-    supportStateSnapshot.twigs,
-  ]);
+    if (raftSettingsSnapshot.bottomMode !== 'off') return true;
+    return SUPPORT_COLLECTION_KEYS.some((key) => hasAnyEntries(supportStateSnapshot[key]));
+  }, [hasAnyEntries, raftSettingsSnapshot.bottomMode, supportStateSnapshot]);
+
+  const slicingModels = React.useMemo(
+    () => scene.models.filter((model) => model.visible && sliceableModelIdSet.has(model.id)),
+    [scene.models, sliceableModelIdSet],
+  );
+  const excludedSliceModelIds = React.useMemo(
+    () => scene.models
+      .filter((model) => model.visible && !sliceableModelIdSet.has(model.id))
+      .map((model) => model.id),
+    [scene.models, sliceableModelIdSet],
+  );
 
   // For non-printing workflows, avoid expensive world-triangle projection work by default.
   // Keep layer floor at 0 when support/raft geometry exists so layer-1 alignment is correct.
@@ -6555,8 +6464,7 @@ export default function Home() {
   // Box3.applyMatrix4 which overestimates the envelope for rotated models.
   const accurateMaxZ = React.useMemo(() => {
     let maxZ = 0;
-    for (const model of scene.models) {
-      if (!model.visible) continue;
+    for (const model of slicingModels) {
       const position = model.geometry.geometry.getAttribute('position');
       if (!position) continue;
       const center = model.geometry.center;
@@ -6580,12 +6488,12 @@ export default function Home() {
       }
     }
     return maxZ;
-  }, [scene.models]);
+  }, [slicingModels]);
 
   const fallbackZRange = React.useMemo(() => ({
     min: hasSupportOrRaftGeometry ? 0 : (scene.sceneBounds?.min.z ?? 0),
-    max: accurateMaxZ > 0 ? accurateMaxZ : (scene.sceneBounds?.max.z ?? 100),
-  }), [hasSupportOrRaftGeometry, scene.sceneBounds, accurateMaxZ]);
+    max: slicingModels.length > 0 ? accurateMaxZ : 0,
+  }), [hasSupportOrRaftGeometry, slicingModels.length, scene.sceneBounds, accurateMaxZ]);
 
   const normalizeToSlicerZRange = React.useCallback((range: { min: number; max: number }) => {
     const maxZMm = Math.max(0, Number(range.max) || 0);
@@ -6613,8 +6521,7 @@ export default function Home() {
 
   const projectedZRangeCacheRef = React.useRef<Map<string, { min: number; max: number }>>(new Map());
   const buildProjectedZRangeCacheKey = React.useCallback(() => {
-    const visibleSignature = scene.models
-      .filter((model) => model.visible)
+    const visibleSignature = slicingModels
       .map((model) => {
         const t = model.transform;
         return [
@@ -6637,27 +6544,17 @@ export default function Home() {
       visibleSignature,
       `support-refresh:${supportRenderRefreshNonce}`,
       `raft-mode:${raftSettingsSnapshot.bottomMode}`,
-      `roots:${countRecordEntries(supportStateSnapshot.roots)}`,
-      `trunks:${countRecordEntries(supportStateSnapshot.trunks)}`,
-      `branches:${countRecordEntries(supportStateSnapshot.branches)}`,
-      `leaves:${countRecordEntries(supportStateSnapshot.leaves)}`,
-      `twigs:${countRecordEntries(supportStateSnapshot.twigs)}`,
-      `sticks:${countRecordEntries(supportStateSnapshot.sticks)}`,
-      `braces:${countRecordEntries(supportStateSnapshot.braces)}`,
-      `kickstands:${countRecordEntries(kickstandStateSnapshot.kickstands)}`,
+      // One entry per collection, so a change the key does not mention cannot
+      // leave a stale projected-Z range cached.
+      ...SUPPORT_COLLECTION_KEYS.map(
+        (key) => `${key}:${countRecordEntries(supportStateSnapshot[key])}`,
+      ),
     ].join('||');
   }, [
-    kickstandStateSnapshot.kickstands,
     raftSettingsSnapshot.bottomMode,
-    scene.models,
+    slicingModels,
     supportRenderRefreshNonce,
-    supportStateSnapshot.braces,
-    supportStateSnapshot.branches,
-    supportStateSnapshot.leaves,
-    supportStateSnapshot.roots,
-    supportStateSnapshot.sticks,
-    supportStateSnapshot.trunks,
-    supportStateSnapshot.twigs,
+    supportStateSnapshot,
   ]);
 
   useEffect(() => {
@@ -6683,7 +6580,7 @@ export default function Home() {
 
       const run = () => {
         if (cancelled) return;
-        const projected = buildProjectedCrossSectionZRange(scene.models);
+        const projected = buildProjectedCrossSectionZRange(slicingModels);
         const baseRange = projected ?? fallbackZRange;
         const nextRange = shouldUseSlicerAlignedRange
           ? normalizeToSlicerZRange(baseRange)
@@ -6727,18 +6624,18 @@ export default function Home() {
     fallbackZRange,
     printingArtifact,
     scene.mode,
-    scene.models,
+    slicingModels,
     setSceneZRangeIfChanged,
   ]);
 
   const slicing = useSlicingManager({
-    hasGeometry: scene.models.length > 0,
+    hasGeometry: slicingModels.length > 0,
     zRange: sceneZRange,
     layerHeightMm: crossSectionLayerHeightMm,
   });
 
   const estimatedSlicerLayerCount = React.useMemo(() => {
-    if (scene.models.length === 0) return 0;
+    if (slicingModels.length === 0) return 0;
 
     const layerHeightMm = Math.max(0.001, crossSectionLayerHeightMm || 0.05);
     const printableMaxZMm = Math.max(0, Number(sceneZRange.max) || 0);
@@ -6748,13 +6645,12 @@ export default function Home() {
       : printableMaxZMm;
 
     return Math.max(0, Math.ceil(slicerHeightMm / layerHeightMm));
-  }, [activePrinterProfile?.buildVolumeMm.height, crossSectionLayerHeightMm, scene.models.length, sceneZRange.max]);
+  }, [activePrinterProfile?.buildVolumeMm.height, crossSectionLayerHeightMm, sceneZRange.max, slicingModels.length]);
 
   const modelStatsEstimatedPrintTimeLabel = React.useMemo(() => {
     if (!activeMaterialProfile) return '—';
 
-    const visibleModels = scene.models.filter((model) => model.visible);
-    if (visibleModels.length === 0) return '—';
+    if (slicingModels.length === 0) return '—';
 
     const totalLayers = estimatedSlicerLayerCount;
     if (totalLayers <= 0) return '—';
@@ -6776,7 +6672,7 @@ export default function Home() {
     );
 
     return formatEstimatedPrintTimeLabel(_, totalSec);
-  }, [_, activeMaterialProfile, estimatedSlicerLayerCount, scene.models]);
+  }, [_, activeMaterialProfile, estimatedSlicerLayerCount, slicingModels.length]);
 
   const printingCurrentHeightMm = React.useMemo(() => {
     if (scene.mode !== 'printing') return null;
@@ -7081,25 +6977,19 @@ export default function Home() {
         }
       };
 
-      for (const t of Object.values(snap.trunks)) {
-        if (t.contactCone) addPos(t.contactCone.pos, t.modelId);
-      }
-      for (const b of Object.values(snap.branches)) {
-        if (b.contactCone) addPos(b.contactCone.pos, b.modelId);
-      }
-      for (const l of Object.values(snap.leaves)) {
-        if (l.contactCone) addPos(l.contactCone.pos, l.modelId);
-      }
-      for (const a of Object.values(snap.anchors)) {
-        if (a.contactCone) addPos(a.contactCone.pos, a.modelId);
-      }
-      for (const tw of Object.values(snap.twigs)) {
-        if (tw.contactDiskA) addPos(tw.contactDiskA.pos, tw.modelId);
-        if (tw.contactDiskB) addPos(tw.contactDiskB.pos, tw.modelId);
-      }
-      for (const st of Object.values(snap.sticks)) {
-        if (st.contactConeA) addPos(st.contactConeA.pos, st.modelId);
-        if (st.contactConeB) addPos(st.contactConeB.pos, st.modelId);
+      // Every declared contact, in registry order.
+      for (const descriptor of SUPPORT_TYPES) {
+        const contacts = contactEndpointsFor(descriptor.id);
+        if (contacts.length === 0) continue;
+
+        const collection = snap[descriptor.location.key as SupportCollectionKey] as unknown as
+          Record<string, { modelId?: string }>;
+        for (const entity of Object.values(collection ?? {})) {
+          for (const { field } of contacts) {
+            const contact = (entity as unknown as Record<string, { pos?: { x: number; y: number; z: number } }>)[field];
+            if (contact?.pos) addPos(contact.pos, entity.modelId);
+          }
+        }
       }
 
       setSupportTips(prevTips => {
@@ -7121,6 +7011,8 @@ export default function Home() {
   // identity changes, so the Generating modal keeps working across HMR —
   // a `useEffect(..., [])` closure stays bound to the dead listener set.
   const autoSupportBusy = React.useSyncExternalStore(subscribeAutoSupportBusy, getAutoSupportBusy, getAutoSupportBusy);
+  const autoSupportProgress = React.useSyncExternalStore(subscribeAutoSupportProgress, getAutoSupportProgress, getAutoSupportProgress);
+  const orientationBusy = React.useSyncExternalStore(subscribeOrientationBusy, getOrientationBusy, getOrientationBusy);
 
   const islandsPoc = useIslands({
     geom: scene.geom,
@@ -7130,12 +7022,14 @@ export default function Home() {
     plateZ: 0,
     sourcePath: scene.activeModel?.sourcePath,
     activeTab: scene.mode,
+    hasRaft: getRaftSettingsForModel(scene.activeModel?.id).bottomMode !== 'off',
   });
 
   // Blocking progress overlays are modal: while one is up it owns Escape, so
   // the key never reaches whatever is behind it.
   useEscapeToClose(islandsPoc.scanning && !autoSupportDrivingScan, undefined);
   useEscapeToClose(autoSupportBusy, undefined);
+  useEscapeToClose(orientationBusy, undefined);
   useEscapeToClose(isExporting, undefined);
 
   // 5. Supports
@@ -7327,21 +7221,23 @@ export default function Home() {
       bounds.expandByPoint(new THREE.Vector3(pos.x + radius, pos.y + radius, pos.z + radius));
     };
 
+    // Which model each knot belongs to, from the `hostedBy knots` edges every
+    // type declares. A brace lands under both its ends because it declares two.
     const knotModelById = new Map<string, string>();
+    for (const descriptor of SUPPORT_TYPES) {
+      const fields = knotFields(descriptor);
+      if (fields.length === 0) continue;
 
-    for (const branch of Object.values(supportStateSnapshot.branches)) {
-      if (branch.modelId) knotModelById.set(branch.parentKnotId, branch.modelId);
-    }
-    for (const leaf of Object.values(supportStateSnapshot.leaves)) {
-      if (leaf.modelId) knotModelById.set(leaf.parentKnotId, leaf.modelId);
-    }
-    for (const brace of Object.values(supportStateSnapshot.braces)) {
-      if (!brace.modelId) continue;
-      knotModelById.set(brace.startKnotId, brace.modelId);
-      knotModelById.set(brace.endKnotId, brace.modelId);
-    }
-    for (const kickstand of Object.values(kickstandStateSnapshot.kickstands)) {
-      if (kickstand.modelId) knotModelById.set(kickstand.hostKnotId, kickstand.modelId);
+      const collection = supportStateSnapshot[descriptor.location.key as SupportCollectionKey] as unknown as
+        Record<string, Record<string, unknown>>;
+      for (const entity of Object.values(collection ?? {})) {
+        const modelId = entity.modelId as string | undefined;
+        if (!modelId) continue;
+        for (const field of fields) {
+          const knotId = entity[field];
+          if (typeof knotId === 'string') knotModelById.set(knotId, modelId);
+        }
+      }
     }
 
     for (const root of Object.values(supportStateSnapshot.roots)) {
@@ -7397,88 +7293,35 @@ export default function Home() {
       }
     }
 
-    for (const trunk of Object.values(supportStateSnapshot.trunks)) {
-      const modelId = trunk.modelId;
-      if (!modelId) continue;
-      for (const seg of trunk.segments) {
-        expand(modelId, seg.topJoint?.pos, Math.max(0.001, (seg.topJoint?.diameter ?? seg.diameter) / 2));
-        expand(modelId, seg.bottomJoint?.pos, Math.max(0.001, (seg.bottomJoint?.diameter ?? seg.diameter) / 2));
-      }
-      if (trunk.contactCone) {
-        expand(modelId, trunk.contactCone.pos, Math.max(0.001, trunk.contactCone.profile.contactDiameterMm / 2));
-      }
-    }
+    // Every type's joints and declared contacts, so each one grows the bounds.
+    for (const descriptor of SUPPORT_TYPES) {
+      const collection = supportStateSnapshot[descriptor.location.key as SupportCollectionKey] as unknown as
+        Record<string, { modelId?: string; segments?: Segment[] }>;
 
-    for (const branch of Object.values(supportStateSnapshot.branches)) {
-      const modelId = branch.modelId;
-      if (!modelId) continue;
-      for (const seg of branch.segments) {
-        expand(modelId, seg.topJoint?.pos, Math.max(0.001, (seg.topJoint?.diameter ?? seg.diameter) / 2));
-        expand(modelId, seg.bottomJoint?.pos, Math.max(0.001, (seg.bottomJoint?.diameter ?? seg.diameter) / 2));
-      }
-      if (branch.contactCone) {
-        expand(modelId, branch.contactCone.pos, Math.max(0.001, branch.contactCone.profile.contactDiameterMm / 2));
-      }
-    }
+      for (const entity of Object.values(collection ?? {})) {
+        const modelId = entity.modelId;
+        if (!modelId) continue;
 
-    for (const leaf of Object.values(supportStateSnapshot.leaves)) {
-      if (!leaf.modelId || !leaf.contactCone) continue;
-      expand(leaf.modelId, leaf.contactCone.pos, Math.max(0.001, leaf.contactCone.profile.contactDiameterMm / 2));
-    }
+        for (const seg of entity.segments ?? []) {
+          expand(modelId, seg.topJoint?.pos, Math.max(0.001, (seg.topJoint?.diameter ?? seg.diameter) / 2));
+          expand(modelId, seg.bottomJoint?.pos, Math.max(0.001, (seg.bottomJoint?.diameter ?? seg.diameter) / 2));
+        }
 
-    for (const twig of Object.values(supportStateSnapshot.twigs)) {
-      const modelId = twig.modelId;
-      if (!modelId) continue;
-      for (const seg of twig.segments) {
-        expand(modelId, seg.topJoint?.pos, Math.max(0.001, (seg.topJoint?.diameter ?? seg.diameter) / 2));
-        expand(modelId, seg.bottomJoint?.pos, Math.max(0.001, (seg.bottomJoint?.diameter ?? seg.diameter) / 2));
-      }
-      expand(modelId, twig.contactDiskA.pos, Math.max(0.001, twig.contactDiskA.contactDiameterMm / 2));
-      expand(modelId, twig.contactDiskB.pos, Math.max(0.001, twig.contactDiskB.contactDiameterMm / 2));
-    }
-
-    for (const stick of Object.values(supportStateSnapshot.sticks)) {
-      const modelId = stick.modelId;
-      if (!modelId) continue;
-      for (const seg of stick.segments) {
-        expand(modelId, seg.topJoint?.pos, Math.max(0.001, (seg.topJoint?.diameter ?? seg.diameter) / 2));
-        expand(modelId, seg.bottomJoint?.pos, Math.max(0.001, (seg.bottomJoint?.diameter ?? seg.diameter) / 2));
-      }
-      expand(modelId, stick.contactConeA.pos, Math.max(0.001, stick.contactConeA.profile.contactDiameterMm / 2));
-      expand(modelId, stick.contactConeB.pos, Math.max(0.001, stick.contactConeB.profile.contactDiameterMm / 2));
-    }
-
-    for (const kickstand of Object.values(kickstandStateSnapshot.kickstands)) {
-      const modelId = kickstand.modelId;
-      if (!modelId) continue;
-      for (const seg of kickstand.segments) {
-        expand(modelId, seg.topJoint?.pos, Math.max(0.001, (seg.topJoint?.diameter ?? seg.diameter) / 2));
-        expand(modelId, seg.bottomJoint?.pos, Math.max(0.001, (seg.bottomJoint?.diameter ?? seg.diameter) / 2));
-      }
-    }
-
-    for (const knot of Object.values(supportStateSnapshot.knots)) {
-      const parent = knot.parentShaftId;
-      let modelId = knotModelById.get(knot.id) ?? null;
-      if (!modelId) {
-        const trunk = supportStateSnapshot.trunks[parent];
-        const branch = supportStateSnapshot.branches[parent];
-        const twig = supportStateSnapshot.twigs[parent];
-        const stick = supportStateSnapshot.sticks[parent];
-        if (trunk?.modelId) modelId = trunk.modelId;
-        else if (branch?.modelId) modelId = branch.modelId;
-        else if (twig?.modelId) modelId = twig.modelId;
-        else if (stick?.modelId) modelId = stick.modelId;
-        else if (parent.startsWith('braceSegment:')) {
-          const braceId = parent.slice('braceSegment:'.length);
-          modelId = supportStateSnapshot.braces[braceId]?.modelId ?? null;
+        for (const { kind, field } of contactEndpointsFor(descriptor.id)) {
+          const contact = (entity as unknown as Record<string, unknown>)[field];
+          if (!contact) continue;
+          // A disk carries its contact diameter directly; a cone in its profile.
+          const c = contact as { pos: { x: number; y: number; z: number }; contactDiameterMm?: number; profile?: { contactDiameterMm?: number } };
+          const diameter = kind === 'disk' ? c.contactDiameterMm : c.profile?.contactDiameterMm;
+          expand(modelId, c.pos, Math.max(0.001, (diameter ?? 0.002) / 2));
         }
       }
-      expand(modelId, knot.pos, Math.max(0.001, (knot.diameter ?? 1.2) / 2));
     }
 
-    for (const knot of Object.values(kickstandStateSnapshot.knots)) {
-      const modelId = knotModelById.get(knot.id) ?? null;
+    // A knot with no hosting entity falls back to the shaft it sits on.
+    for (const knot of Object.values(supportStateSnapshot.knots)) {
+      const modelId = knotModelById.get(knot.id)
+        ?? modelIdOfParentShaft(supportStateSnapshot, knot.parentShaftId);
       expand(modelId, knot.pos, Math.max(0.001, (knot.diameter ?? 1.2) / 2));
     }
 
@@ -7486,16 +7329,7 @@ export default function Home() {
   }, [
     scene.mode,
     transformMgr.transformMode,
-    supportStateSnapshot.braces,
-    supportStateSnapshot.branches,
-    supportStateSnapshot.knots,
-    supportStateSnapshot.leaves,
-    supportStateSnapshot.roots,
-    supportStateSnapshot.sticks,
-    supportStateSnapshot.trunks,
-    supportStateSnapshot.twigs,
-    kickstandStateSnapshot.knots,
-    kickstandStateSnapshot.kickstands,
+    supportStateSnapshot,
     raftSettingsSnapshot,
   ]);
 
@@ -7667,7 +7501,6 @@ export default function Home() {
     setSupportRenderRefreshNonce,
     supportBoundsByModelId,
     arrangeSpacingMm,
-    setArrangeSpacingMm,
     getArrangeTransform,
     getModelSupportAwareDimensionsMm,
     getModelSupportAwareFootprintPolygonRef,
@@ -7807,19 +7640,134 @@ export default function Home() {
     scene.setMode('prepare');
   }, [scene.mode, scene.models.length, scene.setMode]);
 
-  // Visible models with unapplied hole punches. Hidden models are ignored
-  // entirely — they neither open the export warning nor get baked by
-  // "Apply to All".
-  const getVisibleModelIdsWithUnappliedHoles = React.useCallback((): string[] => {
-    return scene.models
-      .filter((model) => model.visible)
-      .filter((model) => {
-        const mm = scene.getModelMeshModifiers(model.id);
-        const punches = mm?.holePunches;
-        return Boolean(punches && punches.length > 0 && !mm?.holePunchesBakedIntoGeometry);
-      })
-      .map((model) => model.id);
+  // Visible models with unapplied hole punches and/or unapplied hollowing.
+  // Hidden models are ignored entirely — they neither open the warning nor get
+  // baked by "Apply to All".
+  //
+  // Slicing and export bake both modifiers (`prepareModelGeometry`); support
+  // generation runs against the mesh as it stands, which is why unapplied
+  // holes or hollowing are worth stopping a run for.
+  const getVisibleModelIdsWithUnappliedModifiers = React.useCallback((): {
+    holeIds: string[];
+    hollowIds: string[];
+  } => {
+    const holeIds: string[] = [];
+    const hollowIds: string[] = [];
+    for (const model of scene.models) {
+      if (!model.visible) continue;
+      const unapplied = getUnappliedModifiers(scene.getModelMeshModifiers(model.id));
+      if (unapplied.holePunches) holeIds.push(model.id);
+      if (unapplied.hollowing) hollowIds.push(model.id);
+    }
+    return { holeIds, hollowIds };
   }, [scene.models, scene.getModelMeshModifiers]);
+
+  const getVisibleModelIdsWithUnappliedHoles = React.useCallback(
+    (): string[] => getVisibleModelIdsWithUnappliedModifiers().holeIds,
+    [getVisibleModelIdsWithUnappliedModifiers],
+  );
+
+  // Export-tab "Apply to All": bake holes into every visible model that has
+  // unapplied holes, one at a time. Each model is made active and handed to the
+  // manager's auto-apply effect via pendingHolePunchAutoApplyModelId; the
+  // advance effect below walks the queue as each bake settles.
+  const handleApplyAllHolePunches = React.useCallback(() => {
+    setShowUnappliedHolePunchModal(false);
+    const queue = getVisibleModelIdsWithUnappliedHoles();
+    if (queue.length === 0) return;
+    holePunchApplyAllQueueRef.current = queue.slice(1);
+    setApplyAllHolePunchProgress({ done: 0, total: queue.length });
+    scene.setActiveModelId(queue[0]);
+    setPendingHolePunchAutoApplyModelId(queue[0]);
+  }, [getVisibleModelIdsWithUnappliedHoles, scene.setActiveModelId]);
+
+  // Guide the user to the per-model hole-punch UI (Prepare → Hollow tool).
+  const handleGoToHollowTool = React.useCallback(() => {
+    setShowUnappliedHolePunchModal(false);
+    const { holeIds, hollowIds } = getVisibleModelIdsWithUnappliedModifiers();
+    const firstPending = holeIds[0] ?? hollowIds[0];
+    if (firstPending) {
+      scene.setActiveModelId(firstPending);
+    }
+    scene.setMode('prepare');
+    setTransformModeWithMirrorFinalize('hollowing');
+  }, [getVisibleModelIdsWithUnappliedModifiers, scene.setActiveModelId, scene.setMode, setTransformModeWithMirrorFinalize]);
+
+  // The modal reports which action the user picked; the page performs it and
+  // answers any waiting caller (Generate Supports). The export flow opens the
+  // same modal without a caller to answer.
+  const pendingModifierDecisionResolve = React.useRef<((proceed: boolean) => void) | null>(null);
+
+  const resolveUnappliedModifier = React.useCallback((action: UnappliedModifierAction) => {
+    const answer = pendingModifierDecisionResolve.current;
+    pendingModifierDecisionResolve.current = null;
+    unappliedHolePunchResolveRef.current = null;
+    setShowUnappliedHolePunchModal(false);
+    if (action === 'goto') {
+      handleGoToHollowTool();
+      answer?.(false);
+      return;
+    }
+    if (action === 'apply') {
+      // "Apply to All" bakes holes through a queue; answer once it drains, so a
+      // waiting support run sees the punched geometry.
+      handleApplyAllHolePunches();
+      pendingModifierDecisionResolve.current = answer;
+      return;
+    }
+    answer?.(true);
+  }, [handleApplyAllHolePunches, handleGoToHollowTool]);
+
+  const unappliedModifierPrompt = React.useMemo(() => {
+    const { holeIds, hollowIds } = getVisibleModelIdsWithUnappliedModifiers();
+    const hasHoles = holeIds.length > 0;
+    const hasHollowing = hollowIds.length > 0;
+    if (unappliedModifierPromptPurpose === 'supports') {
+      const what = hasHoles && hasHollowing
+        ? 'hole punches and hollowing'
+        : (hasHoles ? 'hole punches' : 'hollowing');
+      const verb = hasHoles && !hasHollowing
+        ? 'Hole punches are'
+        : (hasHollowing && !hasHoles ? 'Hollowing is' : 'Holes and hollowing are');
+      return {
+        title: 'Unapplied Changes',
+        subtitle: `Some models have unapplied ${what}`,
+        paragraphs: [
+          `Supports are generated against the mesh as it stands. ${verb} only baked in later, so a support generated now can land inside a hole or a cavity that does not exist yet.`,
+          hasHoles
+            ? 'Apply the holes to every visible model, or open the Hollow tool to review and apply them per model.'
+            : 'Open the Hollow tool to apply the hollowing, or continue and supports will follow the current mesh.',
+        ],
+        showApplyAll: hasHoles,
+      };
+    }
+    return {
+      title: 'Unapplied Holes',
+      subtitle: 'Some models have unapplied hole punches',
+      paragraphs: [
+        'One or more models have hole punches that haven\u2019t been applied. Hole punches must be baked into the geometry before slicing or they will not appear in the output.',
+        'Apply to All bakes the holes into every visible model when applicable. Or open the Hollow tool to review and apply holes individually.',
+      ],
+      showApplyAll: true,
+    };
+  }, [getVisibleModelIdsWithUnappliedModifiers, unappliedModifierPromptPurpose]);
+
+  // Generate Supports: stop for unapplied holes / hollowing first, then run
+  // against whatever the user chose.
+  const requestModifierDecisionBeforeSupports = React.useCallback((): Promise<boolean> => {
+    const { holeIds, hollowIds } = getVisibleModelIdsWithUnappliedModifiers();
+    const pendingIds = [...new Set([...holeIds, ...hollowIds])];
+    if (pendingIds.length === 0) return Promise.resolve(true);
+    if (scene.activeModelId === null || !pendingIds.includes(scene.activeModelId)) {
+      scene.setActiveModelId(pendingIds[0]);
+    }
+    setUnappliedModifierPromptPurpose('supports');
+    unappliedHolePunchResolveRef.current = resolveUnappliedModifier;
+    setShowUnappliedHolePunchModal(true);
+    return new Promise<boolean>((resolve) => {
+      pendingModifierDecisionResolve.current = resolve;
+    });
+  }, [getVisibleModelIdsWithUnappliedModifiers, resolveUnappliedModifier, scene.activeModelId, scene.setActiveModelId]);
 
   React.useEffect(() => {
     if (scene.mode !== 'export') return;
@@ -7831,6 +7779,8 @@ export default function Home() {
     // re-open the modal on top of the progress overlay.
     const unbakedHoleModelIds = getVisibleModelIdsWithUnappliedHoles();
     if (unbakedHoleModelIds.length > 0 && unappliedHolePunchResolveRef.current === null && applyAllHolePunchProgress === null) {
+      setUnappliedModifierPromptPurpose('export');
+      unappliedHolePunchResolveRef.current = resolveUnappliedModifier;
       setShowUnappliedHolePunchModal(true);
       // Make the first model with un-baked holes active so the modal's actions
       // (and the user's next glance) land on a model that needs attention,
@@ -7858,32 +7808,8 @@ export default function Home() {
 
     // Select all visible models for export workspace tinting
     scene.setSelectedModelIds(visibleIds);
-  }, [scene.mode, scene.activeModelId, scene.models, scene.setActiveModelId, getVisibleModelIdsWithUnappliedHoles, applyAllHolePunchProgress]);
+  }, [scene.mode, scene.activeModelId, scene.models, scene.setActiveModelId, getVisibleModelIdsWithUnappliedHoles, applyAllHolePunchProgress, resolveUnappliedModifier]);
 
-  // Export-tab "Apply to All": bake holes into every visible model that has
-  // unapplied holes, one at a time. Each model is made active and handed to the
-  // manager's auto-apply effect via pendingHolePunchAutoApplyModelId; the
-  // advance effect below walks the queue as each bake settles.
-  const handleApplyAllHolePunches = React.useCallback(() => {
-    setShowUnappliedHolePunchModal(false);
-    const queue = getVisibleModelIdsWithUnappliedHoles();
-    if (queue.length === 0) return;
-    holePunchApplyAllQueueRef.current = queue.slice(1);
-    setApplyAllHolePunchProgress({ done: 0, total: queue.length });
-    scene.setActiveModelId(queue[0]);
-    setPendingHolePunchAutoApplyModelId(queue[0]);
-  }, [getVisibleModelIdsWithUnappliedHoles, scene.setActiveModelId]);
-
-  // Guide the user to the per-model hole-punch UI (Prepare → Hollow tool).
-  const handleGoToHollowTool = React.useCallback(() => {
-    setShowUnappliedHolePunchModal(false);
-    const firstWithHoles = getVisibleModelIdsWithUnappliedHoles()[0];
-    if (firstWithHoles) {
-      scene.setActiveModelId(firstWithHoles);
-    }
-    scene.setMode('prepare');
-    setTransformModeWithMirrorFinalize('hollowing');
-  }, [getVisibleModelIdsWithUnappliedHoles, scene.setActiveModelId, scene.setMode, setTransformModeWithMirrorFinalize]);
 
   // Advance the "Apply to All" queue once the current model's bake settles.
   // A model is done when it is no longer applying and the auto-apply handoff
@@ -7898,6 +7824,9 @@ export default function Home() {
     const nextModelId = holePunchApplyAllQueueRef.current.shift();
     if (!nextModelId) {
       setApplyAllHolePunchProgress(null);
+      const waiting = pendingModifierDecisionResolve.current;
+      pendingModifierDecisionResolve.current = null;
+      waiting?.(true);
       return;
     }
     setApplyAllHolePunchProgress((previous) => (
@@ -8087,7 +8016,7 @@ export default function Home() {
     if (scene.importProgress.active) {
       return {
         active: true,
-        label: scene.importProgress.label || (scene.importProgress.type === 'scene' ? 'Loading Scene…' : 'Loading Mesh…'),
+        label: scene.importProgress.label || (scene.importProgress.type === 'scene' ? _(msg`Loading Scene…`) : _(msg`Loading Mesh…`)),
         detail: scene.importProgress.detail,
         progress: scene.importProgress.progress,
       };
@@ -8096,8 +8025,8 @@ export default function Home() {
     if (scene.pluginImportPhase === 'processing') {
       return {
         active: true,
-        label: 'Loading Scene…',
-        detail: 'Converting support data and model metadata',
+        label: _(msg`Loading Scene…`),
+        detail: _(msg`Converting support data and model metadata`),
         progress: null as number | null,
       };
     }
@@ -8108,7 +8037,7 @@ export default function Home() {
       detail: '',
       progress: null as number | null,
     };
-  }, [nativePickerPreparationState, scene.importProgress, scene.pluginImportPhase]);
+  }, [nativePickerPreparationState, scene.importProgress, scene.pluginImportPhase, _]);
 
   const showInlineEmptyLoading = scene.models.length === 0 && (importOverlayState.active || pendingStartupSceneHandoff);
   const [holdEmptyStateSceneImportUi, setHoldEmptyStateSceneImportUi] = React.useState(false);
@@ -8134,10 +8063,10 @@ export default function Home() {
   const showSceneImportOverlay = scene.models.length > 0 && importOverlayState.active && !holdEmptyStateSceneImportUi;
   const showEmptySceneDialog = scene.models.length === 0;
   const emptyStateLoadingLabel = pendingStartupSceneHandoff
-    ? 'Opening scene…'
+    ? _(msg`Opening scene…`)
     : importOverlayState.label;
   const emptyStateLoadingDetail = pendingStartupSceneHandoff
-    ? 'Letting DragonFruit finish its startup animation before loading your scene.'
+    ? _(msg`Letting DragonFruit finish its startup animation before loading your scene.`)
     : importOverlayState.detail;
 
   const renderId = useRef(0);
@@ -8310,7 +8239,6 @@ export default function Home() {
         },
         description: pendingRotateGizmoCommitRef.current.description,
         supportBefore: pendingTransformHistoryRef.current?.supportBefore,
-        kickstandBefore: pendingTransformHistoryRef.current?.kickstandBefore,
       };
       pendingRotateGizmoCommitRef.current = null;
     }
@@ -8379,7 +8307,6 @@ export default function Home() {
 
       const afterSupportSnapshot = captureTransformSupportSnapshot();
       pendingTransformHistoryRef.current.supportAfter = afterSupportSnapshot.support;
-      pendingTransformHistoryRef.current.kickstandAfter = afterSupportSnapshot.kickstand;
     }
 
     const skipCommitToken = skipNextTransformEndCommitRef.current;
@@ -8462,7 +8389,6 @@ export default function Home() {
         },
         description: `transform:${payload.operation} ${targetModelName}`,
         supportBefore: beforeSupportSnapshot.support,
-        kickstandBefore: beforeSupportSnapshot.kickstand,
       };
     }
 
@@ -8559,8 +8485,6 @@ export default function Home() {
         includeSupportState: true,
         supportBefore: pending.supportBefore,
         supportAfter: afterSupportSnapshot.support,
-        kickstandBefore: pending.kickstandBefore,
-        kickstandAfter: afterSupportSnapshot.kickstand,
       },
     );
   }, [captureTransformSupportSnapshot, scene]);
@@ -8618,7 +8542,6 @@ export default function Home() {
           },
         })),
         supportBefore: beforeSupportSnapshot.support,
-        kickstandBefore: beforeSupportSnapshot.kickstand,
       };
     }
 
@@ -8750,7 +8673,6 @@ export default function Home() {
         },
         description: `transform:${operation} ${targetModelName}`,
         supportBefore: captureTransformSupportSnapshot().support,
-        kickstandBefore: captureTransformSupportSnapshot().kickstand,
       };
     }
 
@@ -8783,7 +8705,6 @@ export default function Home() {
           : undefined,
         description: `transform:${operation} ${targetModelName}`,
         supportBefore: beforeSupportSnapshot.support,
-        kickstandBefore: beforeSupportSnapshot.kickstand,
       };
       return;
     }
@@ -8909,7 +8830,6 @@ export default function Home() {
       window.removeEventListener('model-deselected', clearSelectAll as EventListener);
     };
   }, [isSelectAllModelsActive]);
-
 
   const saveAsActive = useActionActive('GLOBAL', 'SAVE_AS');
   const wasSaveAsActive = React.useRef(false);
@@ -9172,7 +9092,6 @@ export default function Home() {
     transformMgr.transformMode,
   ]);
 
-
   const handlePlaceOnFaceAnimationStart = React.useCallback(() => {
     ensurePendingTransformHistoryForActiveModel('rotate');
 
@@ -9391,7 +9310,22 @@ export default function Home() {
     && !scene.activeModel?.meshModifiers?.hollowing?.bakedIntoGeometry;
   const effectiveShaderType = (shouldForceHollowingXray || hollowPreview)
     ? 'xray'
-    : (sessionShaderOverride ?? scene.shaderType);
+    : scene.shaderType;
+
+  // The Overhangs quick toggle remembers what it interrupted, so turning it off
+  // puts the viewport back where it was rather than on an arbitrary mode.
+  const preOverhangViewTypeRef = React.useRef<MeshShaderType>('soft_clay');
+  const toggleOverhangView = React.useCallback((next: boolean) => {
+    if (next) {
+      if (scene.shaderType !== 'overhang_heatmap') {
+        preOverhangViewTypeRef.current = scene.shaderType;
+      }
+      scene.setShaderType('overhang_heatmap');
+      return;
+    }
+    const previous = preOverhangViewTypeRef.current;
+    scene.setShaderType(previous === 'overhang_heatmap' ? 'soft_clay' : previous);
+  }, [scene.shaderType, scene.setShaderType]);
 
   // Populate the hollowing manager deps now that the hole-punch manager and
   // shared callbacks exist (breaks the TDZ/dependency cycle).
@@ -9404,7 +9338,6 @@ export default function Home() {
     persistActiveModelModifiers,
     setPendingModifierResetAction,
     setInteriorView,
-    setSessionShaderOverride,
     computeAutoHolePunchDepthMmForGeometry,
     setHolePunchState,
     setHolePunchPlacements,
@@ -9467,7 +9400,6 @@ export default function Home() {
       },
     });
   }, [defaultHollowingState, hollowingState, pendingBlockerResetState, persistActiveModelModifiers, scene.activeModel]);
-
 
 
   const handleTransformToolbarHover = React.useCallback((mode: TransformMode | null) => {
@@ -9730,34 +9662,11 @@ export default function Home() {
   // renders the two mounts below. See src/features/organicCut/.
   const organicCutToolActive = scene.mode === 'prepare' && transformMgr.transformMode === 'organicCut';
   useUndoRedoHotkeys({ disabled: hollowingEditMode });
-  React.useEffect(() => { organicCutToolActiveRef.current = organicCutToolActive; }, [organicCutToolActive]);
-  // True while a cut waypoint is being dragged, so OrbitControls stays disabled
-  // for the duration of the drag (camera must not move while editing the seam).
-  const [organicCutDragging, setOrganicCutDragging] = React.useState(false);
-  // Timestamp of the most recent drag end. A pointer-up after a drag still
-  // synthesizes a `click` on the model beneath, which would call addPoint and
-  // duplicate the just-moved waypoint. We swallow any organic-cut click that
-  // lands within a short window after a drag ends.
-  const organicCutLastDragEndRef = React.useRef(0);
-  // WHICH of the two the pointer has hold of. Dragging a waypoint moves the seam,
-  // and the cut face travels out from under the tenon; dragging the tenon itself
-  // does not move the face at all. They are both "a cut drag" for OrbitControls
-  // and for undo coalescing, and they are not the same thing at all for the tenon.
-  const [organicCutDraggingTenon, setOrganicCutDraggingTenon] = React.useState(false);
-  const handleOrganicCutDragStateChange = React.useCallback(
-    (dragging: boolean, what: 'seam' | 'tenon' = 'seam') => {
-      if (!dragging) organicCutLastDragEndRef.current = Date.now();
-      setOrganicCutDraggingTenon(dragging && what === 'tenon');
-      setOrganicCutDragging(dragging);
-    },
-    [],
-  );
   const organicCut = useOrganicCutSession({
     toolActive: organicCutToolActive,
     activeGeometry: scene.activeModel?.geometry.geometry ?? null,
     activeGeometryKey: scene.activeModel?.id ?? null,
-    isDraggingPoint: organicCutDragging,
-    isDraggingTenon: organicCutDraggingTenon,
+    activeModelId: scene.activeModel?.id ?? null,
     commitParts: React.useCallback((parts: THREE.BufferGeometry[]) => {
       const target = scene.activeModel;
       if (!target) {
@@ -9772,142 +9681,11 @@ export default function Home() {
     }, [scene]),
   });
 
-  // Surface picking for the Cut tool rides the SAME StlMesh click pipeline as
-  // hole-punch (camera/orbit/gizmo aware), rather than a separate pick mesh.
-  // Convert the hit into a model-LOCAL loop point (matches the mesh object's own
-  // geometry space) so the stored loop is independent of the plate transform.
-  const handleOrganicCutClick = React.useCallback((hit: THREE.Intersection) => {
-    // Ignore the click synthesized by a waypoint drag's pointer-up — it would
-    // add a duplicate point on top of the one we just moved. (Also covers the
-    // brief moment after the drag where `organicCutDragging` has already reset.)
-    if (organicCutDragging || Date.now() - organicCutLastDragEndRef.current < 250) {
-      return;
-    }
-    const target = scene.activeModel;
-    if (!target) return;
-    const hitModelId = (hit.object.userData?.modelId as string | undefined) ?? target.id;
-    if (hitModelId !== target.id) return;
-
-    // If a waypoint is selected, an empty-surface click just DESELECTS it — it
-    // does NOT place a new point. (Click away to dismiss the selection.)
-    if (organicCut.selectedIndex != null) {
-      organicCut.selectPoint(null);
-      return;
-    }
-
-    hit.object.updateWorldMatrix(true, false);
-    const localPoint = hit.object.worldToLocal(hit.point.clone());
-    const localNormal = hit.face?.normal
-      ? hit.face.normal.clone().normalize()
-      : new THREE.Vector3(0, 0, 1);
-
-    organicCut.addPoint({
-      position: [localPoint.x, localPoint.y, localPoint.z],
-      normal: [localNormal.x, localNormal.y, localNormal.z],
-    });
-  }, [organicCut, scene.activeModel, organicCutDragging]);
-
-  // Cut-tool right-click menus, hover-to-arm. The OrganicCutTool reports when the
-  // cursor is over the seam (→ "Add waypoint here") or over a waypoint marker (→
-  // "Delete waypoint"). We stash the armed target in refs; the existing
-  // right-click-up pipeline opens the appropriate menu instead of the
-  // model/support one, and on confirm we insert or delete.
-  // Left-click on the seam line inserts a waypoint at the clicked point (the more
-  // discoverable counterpart to the right-click "Add waypoint here").
-  const handleOrganicCutLineClick = React.useCallback(
-    (info: { localPoint: [number, number, number]; afterIndex: number }) => {
-      organicCut.selectPoint(null);
-      organicCut.insertPoint(info.afterIndex, { position: info.localPoint, normal: [0, 0, 0] });
-    },
-    [organicCut],
-  );
-  const organicCutLineHoverRef = React.useRef<
-    { localPoint: [number, number, number]; afterIndex: number } | null
-  >(null);
-  const handleOrganicCutLineHoverChange = React.useCallback(
-    (info: { localPoint: [number, number, number]; afterIndex: number } | null) => {
-      organicCutLineHoverRef.current = info;
-    },
-    [],
-  );
-  const organicCutMarkerHoverRef = React.useRef<number | null>(null);
-  const [organicCutMarkerHover, setOrganicCutMarkerHover] = React.useState<number | null>(null);
-  const handleOrganicCutMarkerHoverChange = React.useCallback((index: number | null) => {
-    organicCutMarkerHoverRef.current = index;
-    setOrganicCutMarkerHover(index);
-  }, []);
-  // One menu for both actions; `kind` selects which item/handler.
-  const [organicCutLineMenu, setOrganicCutLineMenu] = React.useState<
-    | { kind: 'add'; x: number; y: number; localPoint: [number, number, number]; afterIndex: number }
-    | { kind: 'delete'; x: number; y: number; index: number }
-    | null
-  >(null);
-  const handleOrganicCutLineMenuAction = React.useCallback(
-    (action: EditorMenuAction) => {
-      if (action === 'organic-cut-add-waypoint' && organicCutLineMenu?.kind === 'add') {
-        organicCut.insertPoint(organicCutLineMenu.afterIndex, {
-          position: organicCutLineMenu.localPoint,
-          normal: [0, 0, 0],
-        });
-      } else if (action === 'organic-cut-delete-waypoint' && organicCutLineMenu?.kind === 'delete') {
-        organicCut.removePoint(organicCutLineMenu.index);
-      }
-      setOrganicCutLineMenu(null);
-    },
-    [organicCut, organicCutLineMenu],
-  );
-  // Dismiss the cut line menu on outside click / Escape / scroll, like the editor
-  // context menu.
+  // The cut's pointer and keyboard handling lives in the session; the host only
+  // lends it the right-click gesture the editor menu shares.
   React.useEffect(() => {
-    if (!organicCutLineMenu) return;
-    const onDown = () => setOrganicCutLineMenu(null);
-    // Escape comes from the central hotkey store (no direct key listeners —
-    // docs/reference/hotkeys.md); the rising edge is what dismisses the menu.
-    let wasEscapeActive = hotkeyStore.getState().activeKeys.has('escape');
-    let unsubscribeEscape: (() => void) | null = null;
-    // Defer so the opening right-click doesn't immediately close it.
-    const id = window.setTimeout(() => {
-      window.addEventListener('pointerdown', onDown);
-      unsubscribeEscape = hotkeyStore.subscribe(() => {
-        const isEscapeActive = hotkeyStore.getState().activeKeys.has('escape');
-        if (isEscapeActive && !wasEscapeActive) setOrganicCutLineMenu(null);
-        wasEscapeActive = isEscapeActive;
-      });
-    }, 0);
-    return () => {
-      window.clearTimeout(id);
-      window.removeEventListener('pointerdown', onDown);
-      unsubscribeEscape?.();
-    };
-  }, [organicCutLineMenu]);
-
-  // Cut-tool session state read by useOrganicCutHotkeys, kept in a ref so the
-  // hotkey subscription survives the per-click churn of waypoint editing.
-  const organicCutHotkeyRef = React.useRef({
-    active: organicCutToolActive,
-    removePoint: organicCut.removePoint,
-    selectedIndex: organicCut.selectedIndex,
-  });
-  React.useEffect(() => {
-    organicCutHotkeyRef.current = {
-      active: organicCutToolActive,
-      removePoint: organicCut.removePoint,
-      selectedIndex: organicCut.selectedIndex,
-    };
-  }, [organicCutToolActive, organicCut.removePoint, organicCut.selectedIndex]);
-  // Delete for the Cut tool, claimed through the delete registry. Undo/redo are
-  // the app's own: every Cut edit is pushed to the history.
-  useOrganicCutHotkeys(organicCutHotkeyRef);
-  // Show Preview, from the configurable CUT.TOGGLE_PREVIEW binding.
-  useOrganicCutPreviewHotkey(
-    React.useCallback(() => {
-      organicCut.setPanelState({
-        ...organicCut.panelState,
-        showPreview: !organicCut.panelState.showPreview,
-      });
-    }, [organicCut]),
-    organicCutToolActive,
-  );
+    organicCutContextMenuRef.current = organicCut.tryOpenContextMenu;
+  }, [organicCut.tryOpenContextMenu]);
 
   // Mirror session state: while the user is in Mirror mode we don't bake the
   // geometry per-click (a 2.4M-vert bake is slow on big meshes). Instead, each
@@ -9931,24 +9709,20 @@ export default function Home() {
       <TopBar
         meshColor={scene.meshColor}
         onMeshColorChange={scene.setMeshColor}
-        selectionColor={scene.selectionColor}
-        onSelectionColorChange={scene.setSelectionColor}
-        hoverColor={scene.hoverColor}
-        onHoverColorChange={scene.setHoverColor}
-        shaderType={scene.shaderType}
-        onShaderTypeChange={scene.setShaderType}
+        configuredShaderType={scene.configuredShaderType}
+        onConfiguredShaderTypeChange={scene.setConfiguredShaderType}
         matcapVariant={scene.matcapVariant}
         onMatcapVariantChange={scene.setMatcapVariant}
         flatUseVertexColors={scene.flatUseVertexColors}
         onFlatUseVertexColorsChange={scene.setFlatUseVertexColors}
-        toonSteps={scene.toonSteps}
-        onToonStepsChange={scene.setToonSteps}
         ambientIntensity={scene.ambientIntensity}
         onAmbientIntensityChange={scene.setAmbientIntensity}
         directionalIntensity={scene.directionalIntensity}
         onDirectionalIntensityChange={scene.setDirectionalIntensity}
         materialRoughness={scene.materialRoughness}
         onMaterialRoughnessChange={scene.setMaterialRoughness}
+        bakedAoIntensity={scene.bakedAoIntensity}
+        onBakedAoIntensityChange={scene.setBakedAoIntensity}
         xrayOpacity={scene.xrayOpacity}
         onXrayOpacityChange={scene.setXrayOpacity}
         heatmapMinAngle={scene.heatmapMinAngle}
@@ -9974,11 +9748,10 @@ export default function Home() {
         onModeChange={handleModeChange}
         hasModels={scene.models.length > 0}
         hasPrintingData={hasPrintingWorkspaceData}
-        viewTypeOverride={sessionShaderOverride}
-        onViewTypeOverrideChange={setSessionShaderOverride}
-        interiorView={interiorView}
-        onInteriorViewChange={setInteriorView}
-        interiorViewAvailable={hasCavityGeometry}
+        viewType={scene.shaderType}
+        onViewTypeChange={scene.setShaderType}
+        overhangViewActive={scene.shaderType === 'overhang_heatmap'}
+        onOverhangViewChange={toggleOverhangView}
         hideWorkflowControls={onboardingMounted && wizardActive}
         heatmapColors={scene.heatmapColors}
         onHeatmapColorChange={scene.onHeatmapColorChange}
@@ -10067,6 +9840,7 @@ export default function Home() {
               handleExportSuccess: handleExportSuccess,
               showOperationError: showOperationError,
               estimatedSlicerLayerCount: estimatedSlicerLayerCount,
+              excludedSliceModelIds: excludedSliceModelIds,
               crossSectionLayerHeightMm: crossSectionLayerHeightMm,
               estimatedVolumeMlLabel: estimatedVolumeMlLabel,
               handleSliceRunStartedForPrinting: handleSliceRunStartedForPrinting,
@@ -10090,13 +9864,55 @@ export default function Home() {
 
         ) : scene.mode === 'support' ? (
           <>
-            <SupportSidebar key="support-settings" />
+            <SupportSidebar key="support-settings" activeModelId={scene.activeModelId} />
             {autoSupportsExperimentEnabled && (
               <AutoSupportPanel
                 key="support-auto"
                 islands={islandsPoc}
                 hasGeometry={!!scene.geom}
                 activeModelId={scene.activeModelId ?? undefined}
+                autoLift={transformMgr.autoLift}
+                onAutoLiftChange={handleAutoLiftChange}
+                onBeforeRun={requestModifierDecisionBeforeSupports}
+              />
+            )}
+            {autoRotationExperimentEnabled && (
+              <AutoRotationPanel
+                key="support-rotation"
+                activeModelId={scene.activeModelId ?? undefined}
+                currentRotation={scene.activeModel?.transform.rotation}
+                onApplyRotation={(modelId, rotation) => {
+                  const activeModel = scene.activeModel;
+                  const current = activeModel?.transform;
+                  if (!activeModel || !current) return;
+                  const before = {
+                    position: current.position.clone(),
+                    rotation: current.rotation.clone(),
+                    scale: current.scale.clone(),
+                  };
+                  const after = {
+                    position: current.position.clone(),
+                    rotation,
+                    scale: current.scale.clone(),
+                  };
+                  // A new down-axis means new extents: seat to the plate
+                  // clearance after orientation — lift OR drop — so repeated
+                  // orienting never drifts the model upward. One history entry
+                  // covers rotate + lift.
+                  if (activeModel.id === modelId) {
+                    const lowestWorldZ = getModelLowestWorldZ({ id: modelId, geometry: activeModel.geometry, transform: after });
+                    after.position.z += transformMgr.liftDistance - lowestWorldZ;
+                  }
+                  scene.updateModelTransform(modelId, after);
+                  scene.commitModelTransformHistory(modelId, before, after, 'Apply Orientation Suggestion');
+                }}
+                onBeforeOrientApply={(continueApply) => requestOrientSupportDeletionWithContinuation(continueApply)}
+                onOrientationReport={showOrientationToast}
+                activeModelName={scene.activeModel?.name}
+                blockersActive={transformMgr.transformMode === 'supportBlockers'}
+                onToggleBlockers={() => {
+                  setTransformModeWithMirrorFinalize(transformMgr.transformMode === 'supportBlockers' ? 'select' : 'supportBlockers');
+                }}
               />
             )}
             <IslandsPanel
@@ -10148,7 +9964,6 @@ export default function Home() {
           displayActiveModelId: displayActiveModelId,
           transformDebugStats: transformDebugStats,
           supportDebugStats: supportDebugStats,
-          activeSupportEntityCounts: activeSupportEntityCounts,
           formatDebugVec3: formatDebugVec3,
           formatDebugVec3Like: formatDebugVec3Like,
           formatDebugNumber: formatDebugNumber,
@@ -10228,12 +10043,12 @@ export default function Home() {
                 }}
               >
                 <div className="text-base font-semibold" style={{ color: 'var(--text-strong)' }}>
-                  {isPrepareDragUnsupported ? 'Unsupported file format' : 'Drop supported files to import'}
+                  {isPrepareDragUnsupported ? _(msg`Unsupported file format`) : _(msg`Drop supported files to import`)}
                 </div>
                 <div className="mt-2 text-sm" style={{ color: 'var(--text-muted)' }}>
                   {isPrepareDragUnsupported
-                    ? `Please use: ${['STL', 'OBJ', '3MF', ...sceneFileExtensionLabelsValue].join(', ')}`
-                    : `Supported: ${['STL', 'OBJ', '3MF', ...sceneFileExtensionLabelsValue].join(', ')}`}
+                    ? dropOverlayUnsupportedFormats(['STL', 'OBJ', '3MF', ...sceneFileExtensionLabelsValue].join(', '), _)
+                    : dropOverlaySupportedFormats(['STL', 'OBJ', '3MF', ...sceneFileExtensionLabelsValue].join(', '), _)}
                 </div>
               </div>
             </div>
@@ -10251,8 +10066,7 @@ export default function Home() {
             shaderType={effectiveShaderType}
             matcapVariant={scene.matcapVariant}
             flatUseVertexColors={scene.flatUseVertexColors}
-            toonSteps={scene.toonSteps}
-            xrayOpacity={scene.xrayOpacity}
+                xrayOpacity={scene.xrayOpacity}
             heatmapMinAngle={scene.heatmapMinAngle}
             heatmapMaxAngle={scene.heatmapMaxAngle}
             heatmapColors={scene.heatmapColors}
@@ -10267,9 +10081,16 @@ export default function Home() {
                 ? islandsPoc.islandMarkers
                 : (islands.overlayEnabled ? islands.islandMarkers : [])
             }
+            islandInstances={
+              scene.mode === 'support'
+                ? islandsPoc.islandInstances
+                : (islands.overlayEnabled ? islands.islandInstances : null)
+            }
             overhangIslands={
               scene.mode === 'support' ? islandsPoc.overhangIslands : []
             }
+            toppleCoverage={islandsPoc.toppleCoverage}
+            dragTotalMm3={islandsPoc.dragTotalMm3}
             overlayBrushRadius={islands.overlayBrushRadius}
             overlayColor={islands.overlayColor}
             overlayOpacity={islands.overlayOpacity}
@@ -10280,6 +10101,7 @@ export default function Home() {
             ambientIntensity={scene.ambientIntensity}
             directionalIntensity={scene.directionalIntensity}
             materialRoughness={scene.materialRoughness}
+            bakedAoIntensity={scene.bakedAoIntensity}
             scanResults={islands.scanData}
             layerHeightMm={slicing.layerHeightMm}
             scanBBox={islands.scanBBox}
@@ -10306,50 +10128,26 @@ export default function Home() {
             onSupportClick={supports.onModelClick}
             onHolePunchClick={scene.mode === 'prepare' && transformMgr.transformMode === 'hollowing' && !hollowingEditMode ? handleHolePunchClick : undefined}
             onHolePunchHover={scene.mode === 'prepare' && transformMgr.transformMode === 'hollowing' && !hollowingEditMode ? handleHolePunchHover : undefined}
-            onOrganicCutClick={organicCutToolActive ? handleOrganicCutClick : undefined}
-            organicCutDragging={organicCutDragging}
+            onOrganicCutClick={organicCutToolActive ? organicCut.onSurfaceClick : undefined}
+            organicCutDragging={organicCut.dragging}
             organicCutKeyGizmo={
-              // Both cut modes place a tenon now, so the aim gizmo follows the tenon
-              // rather than the mode; it mounts whenever there is a frame to sit on.
-              organicCutToolActive && organicCut.tenonFrame && organicCut.panelState.showPreview ? (
-                <OrganicCutTenonGizmo
+              // Mounted only when it draws something: SceneCanvas keys local
+              // clipping off this prop being present.
+              organicCutToolActive && organicCut.tenonGizmoVisible ? (
+                <OrganicCutTenonGizmoMount
+                  session={organicCut}
                   models={scene.models}
                   activeModelId={displayActiveModelId}
                   activeTransform={transformMgr.transform}
-                  tenonFrame={organicCut.tenonFrame}
-                  tenonTiltRad={organicCut.panelState.tenonTiltRad}
-                  tenonRollRad={organicCut.panelState.tenonRollRad}
-                  tenonAnchor={organicCut.panelState.tenonAnchor}
-                  membranePreview={organicCut.membranePreview}
-                  onTenonAnchorChange={(anchor) =>
-                    organicCut.setPanelState({ ...organicCut.panelState, tenonAnchor: anchor })
-                  }
-                  onTenonAimChange={(tilt, roll) =>
-                    organicCut.setPanelState({
-                      ...organicCut.panelState,
-                      tenonTiltRad: tilt,
-                      tenonRollRad: roll,
-                    })
-                  }
-                  onDragStateChange={(dragging) =>
-                    handleOrganicCutDragStateChange(dragging, 'tenon')
-                  }
                 />
               ) : undefined
             }
             onSupportHover={supports.onModelHover}
             onActiveModelChange={handleSceneModelSelection}
             onMarqueeSelectionChange={handleSceneMarqueeSelection}
-            trunkPlacementPreview={supports.trunkPlacementV2.previewData}
-            branchPlacementPreview={supports.branchPlacement.previewData}
-            leafPlacementPreview={supports.leafPlacement.previewData}
-            bracePlacementPreview={supports.bracePreview}
-            kickstandPlacementPreview={supports.kickstandPreview}
+            placementPreviews={supports.placementPreviews}
             blockSupportPlacement={supports.isPlacementHardDisabled}
-            isBranchPlacementActive={supports.branchPlacement.isActive}
-            isLeafPlacementActive={supports.leafPlacement.isActive}
-            isBracePlacementActive={supports.bracePlacement.isActive}
-            isKickstandPlacementActive={supports.kickstandPlacement.isActive}
+            placementActive={supports.placementActive}
             branchTipPosition={supports.branchPlacement.tipPosition}
             branchHoverPosition={supports.branchPlacement.hoverPosition}
             leafTipPosition={supports.leafPlacement.tipPosition}
@@ -10358,8 +10156,8 @@ export default function Home() {
             selectionHighlightMode={effectiveSelectionHighlightMode}
             higherContrastModelEdges={workspaceCameraSettings.higherContrastModelEdges}
             blockerEditMode={hollowingEditMode}
-            selectionColor={scene.selectionColor}
-            hoverColor={scene.hoverColor}
+            selectionColor={themeMeshHighlightColors.selection}
+            hoverColor={themeMeshHighlightColors.hover}
             hoverTintStrength={effectiveHoverTintStrengthForScene}
             selectedTintStrength={effectiveSelectedTintStrengthForScene}
             supportsRef={supportsRef}
@@ -10377,7 +10175,7 @@ export default function Home() {
               resolveSelection: resolveBlockedHollowVoxelMarqueeSelection,
               onSelectionChange: handleBlockedHollowVoxelMarqueeSelection,
             }}
-            renderSceneOverlays={({ raycastActiveModelFromRay }) => {
+            renderSceneOverlays={({ raycastActiveModelFromRay, isDragging }) => {
               // Update raycast ref for island co-visibility checks
               modelRaycastRef.current = (start, end) => {
                 const dir = new THREE.Vector3().subVectors(end, start).normalize();
@@ -10392,6 +10190,7 @@ export default function Home() {
               return (
               <SceneOverlays
                 raycastActiveModelFromRay={raycastActiveModelFromRay}
+                modelDragging={isDragging}
                 scene={scene}
                 transformMgr={transformMgr}
                 ghostData={ghostData}
@@ -10450,11 +10249,14 @@ export default function Home() {
             deferCameraIntro={holdEmptyStateSceneImportUi}
             freezeViewportActive={isSlicingBusy && scene.mode === 'export'}
             indicatorPlaneZ={scene.mode === 'printing' ? printingCurrentHeightMm : null}
-            indicatorPlaneColor={scene.selectionColor || '#ec2a77'}
+            indicatorPlaneColor={themeMeshHighlightColors.selection || '#ec2a77'}
             onNewDeviceDetected={handleNewDeviceDetected}
           >
             {scene.mode === 'prepare' && transformMgr.transformMode === 'smoothing' && (
               <MeshSmoothingBrushCursor />
+            )}
+            {(scene.mode === 'prepare' || scene.mode === 'support') && transformMgr.transformMode === 'supportBlockers' && (
+              <SupportBlockerCursor />
             )}
             {scene.mode === 'prepare' && transformMgr.transformMode === 'placeOnFace' && (
               <PlaceOnFaceTool
@@ -10469,35 +10271,11 @@ export default function Home() {
               />
             )}
             {organicCutToolActive && (
-              <OrganicCutTool
+              <OrganicCutToolMount
+                session={organicCut}
                 models={scene.models}
                 activeModelId={displayActiveModelId}
                 activeTransform={transformMgr.transform}
-                active={!organicCut.isApplying}
-                cutLeakPoints={organicCut.cutLeakPoints}
-                loop={organicCut.loop}
-                onAddPoint={organicCut.addPoint}
-                onUpdatePoint={organicCut.updatePoint}
-                onDragStateChange={handleOrganicCutDragStateChange}
-                onLineHoverChange={handleOrganicCutLineHoverChange}
-                onLineClick={handleOrganicCutLineClick}
-                selectedIndex={organicCut.selectedIndex}
-                onSelectPoint={organicCut.selectPoint}
-                onToggleLockPoint={organicCut.toggleLockPoint}
-                onMarkerHoverChange={handleOrganicCutMarkerHoverChange}
-                geodesicPolyline={organicCut.geodesicPolyline}
-                planeCurves={organicCut.planeCurves}
-                inactiveLoopPolylines={organicCut.inactiveLoopPolylines}
-                cutMode={organicCut.panelState.cutMode}
-                membranePreview={organicCut.membranePreview}
-                tenonPreview={organicCut.tenonPreview}
-                tenonTriangleCount={organicCut.tenonTriangleCount}
-                tenonFits={organicCut.tenonFits}
-                tenonFrame={organicCut.tenonFrame}
-                tenonAnchor={organicCut.panelState.tenonAnchor}
-                tenonTiltRad={organicCut.panelState.tenonTiltRad}
-                tenonRollRad={organicCut.panelState.tenonRollRad}
-                showPreview={organicCut.panelState.showPreview}
               />
             )}
             {scene.mode === 'prepare' && transformMgr.transformMode === 'mirror' && (
@@ -10617,34 +10395,8 @@ export default function Home() {
         disabledActions={editorContextMenuDisabledActions}
       />
 
-      {/* Organic-cut right-click menu: "Add waypoint here" (seam) or "Delete
-          waypoint" (marker), depending on what was hovered when right-clicked. */}
-      <EditorContextMenu
-        position={organicCutLineMenu ? { x: organicCutLineMenu.x, y: organicCutLineMenu.y } : null}
-        onAction={handleOrganicCutLineMenuAction}
-        title={organicCutLineMenu?.kind === 'delete' ? 'Waypoint' : 'Cut Seam'}
-        items={
-          organicCutLineMenu?.kind === 'delete'
-            ? [ORGANIC_CUT_DELETE_WAYPOINT_ITEM]
-            : [ORGANIC_CUT_ADD_WAYPOINT_ITEM]
-        }
-      />
-
-      {/* Waypoint hover hint: the double-click-to-lock behaviour, shown only while
-          the pointer is over a waypoint in the 3D view. */}
-      <MouseTooltip visible={organicCutToolActive && organicCutMarkerHover !== null}>
-        <div
-          className="rounded px-2 py-1.5 text-[11px] leading-tight font-medium shadow-lg whitespace-nowrap"
-          style={{
-            background: 'rgba(24, 24, 24, 0.98)',
-            color: 'var(--text-strong, #e0e0e0)',
-            border: '1px solid var(--accent, #baf72e)',
-            boxShadow: '0 6px 32px 0 rgba(0,0,0,0.44), 0 1.5px 8px 0 rgba(0,0,0,0.28)',
-          }}
-        >
-          Double-click to lock this waypoint from snapping.
-        </div>
-      </MouseTooltip>
+      {/* The cut's own right-click menu and its waypoint hover hint. */}
+      <OrganicCutOverlay session={organicCut} toolActive={organicCutToolActive} />
 
       <DiagnosticsModals
         clearHistory={clearHistory}
@@ -10824,7 +10576,6 @@ export default function Home() {
         setShouldAutoSliceOnExportEntry={setShouldAutoSliceOnExportEntry}
         setShowPrintingResliceModal={setShowPrintingResliceModal}
         setShowSliceCompletedModal={setShowSliceCompletedModal}
-        setUvToolsLaunchingPath={setUvToolsLaunchingPath}
         shouldReturnToPrintingAfterSliceRef={shouldReturnToPrintingAfterSliceRef}
         shouldShowPrintingMonitorSlowResponseCard={shouldShowPrintingMonitorSlowResponseCard}
         showPrintingResliceModal={showPrintingResliceModal}
@@ -10871,8 +10622,6 @@ export default function Home() {
       />
 
       <ModifierModals
-        handleApplyAllHolePunches={handleApplyAllHolePunches}
-        handleGoToHollowTool={handleGoToHollowTool}
         handleCancelDestructiveTransform={handleCancelDestructiveTransform}
         handleConfirmBlockerReset={handleConfirmBlockerReset}
         handleConfirmDestructiveTransform={handleConfirmDestructiveTransform}
@@ -10885,9 +10634,9 @@ export default function Home() {
         pendingModifierResetAction={pendingModifierResetAction}
         setPendingBlockerResetState={setPendingBlockerResetState}
         setPendingModifierResetAction={setPendingModifierResetAction}
-        setShowUnappliedHolePunchModal={setShowUnappliedHolePunchModal}
         showModifierApplyBlockingOverlay={showModifierApplyBlockingOverlay}
         showUnappliedHolePunchModal={showUnappliedHolePunchModal}
+        unappliedModifierPrompt={unappliedModifierPrompt}
         unappliedHolePunchResolveRef={unappliedHolePunchResolveRef}
       />
 
@@ -10895,7 +10644,6 @@ export default function Home() {
         isOpen={showManifoldWarning}
         onAcknowledge={() => setShowManifoldWarning(false)}
       />
-
 
 
       <MeshRepairModals
@@ -10923,7 +10671,11 @@ export default function Home() {
         isExportSuccessToastVisible={isExportSuccessToastVisible}
         exportErrorToast={exportErrorToast}
         isExportErrorToastVisible={isExportErrorToastVisible}
+        orientationToast={orientationToast}
+        isOrientationToastVisible={isOrientationToastVisible}
       />
+
+      <SystemNotificationStack />
 
       {islandsPoc.scanning && !autoSupportDrivingScan && (
         <div className="absolute inset-0 z-[121] flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
@@ -10970,12 +10722,34 @@ export default function Home() {
               <p>{islandsPoc.scanning ? 'Scanning islands & minima…' : 'Placing and bracing supports…'}</p>
             </div>
             <div className="mt-2 text-[11px] font-medium tracking-wide" style={{ color: 'var(--accent)' }}>
-              Elapsed: {islandsPoc.scanning ? islandsPoc.elapsedLabel : '…'}
+              {islandsPoc.scanning ? <>Elapsed: {islandsPoc.elapsedLabel}</> : <OrientElapsed />}
             </div>
             <div className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
               Processing 1 model
             </div>
-            <ScanProgressBar progress={islandsPoc.scanning ? islandsPoc.scanProgress : null} />
+            <ScanProgressBar progress={islandsPoc.scanning ? islandsPoc.scanProgress : autoSupportProgress} />
+          </div>
+        </div>
+      )}
+      {orientationBusy && (
+        <div className="absolute inset-0 z-[123] flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
+          <div
+            className="w-[min(520px,92vw)] rounded-xl border px-5 py-4 shadow-xl"
+            style={{ background: 'color-mix(in srgb, var(--surface-0), black 10%)', borderColor: 'var(--border-subtle)' }}
+            role="dialog" aria-modal="true" aria-live="polite"
+          >
+            <div className="text-sm font-semibold" style={{ color: 'var(--text-strong)' }}>
+              Orienting Model
+            </div>
+            <div className="mt-1 space-y-0.5 text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+              <p>Sweeping orientations…</p>
+            </div>
+            <div className="mt-2 text-[11px] font-medium tracking-wide" style={{ color: 'var(--accent)' }}>
+              <OrientElapsed />
+            </div>
+            <div className="ui-loading-track mt-3 h-2.5 w-full rounded-full" style={{ background: 'color-mix(in srgb, var(--surface-2), black 20%)' }}>
+              <div className="ui-loading-indicator" style={{ background: 'linear-gradient(90deg, var(--accent), #ff79c6)' }} />
+            </div>
           </div>
         </div>
       )}

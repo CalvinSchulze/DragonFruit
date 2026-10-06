@@ -4,9 +4,12 @@ import { Branch, Joint, Knot, Segment, Vec3 } from '../../types';
 import type { ContactCone, SupportTipProfile } from '../../SupportPrimitives/ContactCone/types';
 import { getFinalSocketPosition } from '../../SupportPrimitives/ContactCone/contactConeUtils';
 import { calculateDiskThickness } from '../../SupportPrimitives/ContactDisk/contactDiskUtils';
-import { recomputeContactConeForMovedDisk } from '../../SupportPrimitives/ContactDisk';
+// Direct, not through the barrel: the barrel re-exports renderers and their
+// React hooks, which a server route cannot import.
+import { recomputeContactConeForMovedDisk } from '../../SupportPrimitives/ContactDisk/ContactDiskInteraction';
 import type { SupportData } from '../../rendering/SupportBuilder';
-import { getSettings } from '../../Settings';
+import { getSettings } from '../../Settings/state';
+import type { SupportSettings } from '../../Settings/types';
 import { applySizingOverridesToSettings } from '../../autoSupport/parameterSizing';
 import { getJointDiameter } from '../../constants';
 import { resolveConeAxisPolicy, normalizeVectorOrFallback } from '../../PlacementLogic/ConeAxisPolicy';
@@ -23,6 +26,23 @@ const BRANCH_SOCKET_AZIMUTH_DEG = [0, 25, -25, 50, -50, 85, -85, 120, -120, 155,
 // Stretch factors: how much to extend the cone beyond nominal length.
 // Kept conservative — long stretched cones look unnatural on branches.
 const BRANCH_SOCKET_STRETCH_FACTORS = [1, 1.05, 1.12, 1.2];
+
+/**
+ * How flat a cone may lie and still be preferred. Past this the contact reads as
+ * a near-horizontal whisker: the socket has swung so far sideways of the tip
+ * that the cone runs along the surface instead of away from it.
+ *
+ * A preference, not a filter — a cone past it is still used when no steeper one
+ * clears the mesh, which is what "if possible" means for a contact in a pocket.
+ */
+const MAX_PREFERRED_CONE_LEAN_FROM_VERTICAL_DEG = 75;
+
+/** The lean of the cone that ends at `socketPos`, in degrees from vertical. */
+function coneLeanFromVerticalDeg(tipPos: Vec3, socketPos: Vec3): number {
+    const horizontal = Math.hypot(socketPos.x - tipPos.x, socketPos.y - tipPos.y);
+    const vertical = Math.abs(socketPos.z - tipPos.z);
+    return (Math.atan2(horizontal, Math.max(0.001, vertical)) * 180) / Math.PI;
+}
 
 function getConeStartPosition(cone: ContactCone): Vec3 {
     const surfaceNormal = cone.surfaceNormal ?? cone.normal;
@@ -154,10 +174,20 @@ function findBestBranchConePlacement(args: {
     tangentForward.normalize();
     const tangentRight = new THREE.Vector3().crossVectors(surfaceNormal, tangentForward).normalize();
 
-    let bestCandidate: { cone: ContactCone; socketPos: Vec3; score: number } | null = null;
+    const best: {
+        candidate: { cone: ContactCone; socketPos: Vec3; score: number } | null;
+        preferred: { cone: ContactCone; socketPos: Vec3; score: number } | null;
+    } = { candidate: null, preferred: null };
+    const consider = (candidate: { cone: ContactCone; socketPos: Vec3; score: number }): void => {
+        if (!best.candidate || candidate.score < best.candidate.score) best.candidate = candidate;
+        if (coneLeanFromVerticalDeg(tipPos, candidate.socketPos) > MAX_PREFERRED_CONE_LEAN_FROM_VERTICAL_DEG) {
+            return;
+        }
+        if (!best.preferred || candidate.score < best.preferred.score) best.preferred = candidate;
+    };
 
     if (!mesh || isConePlacementClear(directCone, mesh)) {
-        bestCandidate = {
+        consider({
             cone: directCone,
             socketPos: directSocketPos,
             score: scoreBranchConeCandidate({
@@ -168,7 +198,7 @@ function findBestBranchConePlacement(args: {
                 desiredDirection,
                 nominalLengthMm,
             }),
-        };
+        });
     }
 
     for (const polarDeg of BRANCH_SOCKET_POLAR_DEG) {
@@ -214,26 +244,29 @@ function findBestBranchConePlacement(args: {
                     nominalLengthMm,
                 });
 
-                if (!bestCandidate || score < bestCandidate.score) {
-                    bestCandidate = {
-                        cone: candidateCone,
-                        socketPos: getFinalSocketPosition(candidateCone),
-                        score,
-                    };
-                }
+                consider({
+                    cone: candidateCone,
+                    socketPos: getFinalSocketPosition(candidateCone),
+                    score,
+                });
             }
         }
     }
 
-    if (bestCandidate) {
+    // The steepest cone that clears wins over the nearest one that does not:
+    // a contact served by a cone lying along the surface holds nothing up, and
+    // the member bends into it at the socket, which is the junction the preview
+    // reads as a near-horizontal whisker.
+    const chosen = best.preferred ?? best.candidate;
+    if (chosen) {
         const rerouted =
-            Math.abs(bestCandidate.socketPos.x - directSocketPos.x) > 0.0001
-            || Math.abs(bestCandidate.socketPos.y - directSocketPos.y) > 0.0001
-            || Math.abs(bestCandidate.socketPos.z - directSocketPos.z) > 0.0001;
+            Math.abs(chosen.socketPos.x - directSocketPos.x) > 0.0001
+            || Math.abs(chosen.socketPos.y - directSocketPos.y) > 0.0001
+            || Math.abs(chosen.socketPos.z - directSocketPos.z) > 0.0001;
 
         return {
-            cone: bestCandidate.cone,
-            socketPos: bestCandidate.socketPos,
+            cone: chosen.cone,
+            socketPos: chosen.socketPos,
             rerouted,
         };
     }
@@ -257,6 +290,15 @@ export interface BranchBuildInput {
     shaftDiameterMm?: number;
     tipContactDiameterMm?: number;
     rootsDiameterMm?: number;
+    /** Settings band to size from. Defaults to the live global settings, which is
+     *  what a fresh placement wants. Rebuilding an existing branch passes that
+     *  branch's own band instead, so editing it does not resize it to whatever
+     *  the active preset happens to be. */
+    settings?: SupportSettings;
+    /** Contact tip profile to reuse verbatim instead of deriving one from
+     *  `settings`. Its `lengthMm` is the nominal the socket search starts from;
+     *  the solved length replaces it in the returned cone. */
+    tipProfile?: SupportTipProfile;
 }
 
 export interface BranchBuildResult {
@@ -274,7 +316,7 @@ export interface BranchBuildResult {
 export function buildBranchData(input: BranchBuildInput): BranchBuildResult {
     const { tipPos, tipNormal, modelId, parentKnot, mesh } = input;
 
-    const settings = getSettings();
+    const settings = input.settings ?? getSettings();
     const settingsCodeHex = encodeSupportSettingsHex(applySizingOverridesToSettings(settings, {
         shaftDiameterMm: input.shaftDiameterMm,
         tipContactDiameterMm: input.tipContactDiameterMm,
@@ -290,7 +332,7 @@ export function buildBranchData(input: BranchBuildInput): BranchBuildResult {
     });
 
     const effectiveConeAxis = coneAxis ?? tipNormal;
-    const tipProfile: SupportTipProfile = {
+    const tipProfile: SupportTipProfile = input.tipProfile ?? {
         type: 'disk',
         contactDiameterMm: input.tipContactDiameterMm ?? settings.tip.contactDiameterMm,
         bodyDiameterMm: settings.tip.bodyDiameterMm,
@@ -406,6 +448,7 @@ export function buildBranchData(input: BranchBuildInput): BranchBuildResult {
     const branchId = uuidv4();
     const branch: Branch = {
         id: branchId,
+        typeId: 'branch',
         modelId,
         settingsCodeHex,
         parentKnotId: parentKnot.id,
@@ -422,4 +465,49 @@ export function buildBranchData(input: BranchBuildInput): BranchBuildResult {
     };
 
     return { branch, supportData };
+}
+
+/**
+ * Re-stamps rebuilt branch geometry with the ids the branch already carried.
+ *
+ * A tip drag rebuilds the whole branch on every pointer move. Fresh ids there
+ * change the contact cone's id, which drops its selection and unmounts the
+ * drag HUD mid-drag, and would detach any knot hosted on the branch's own
+ * shafts once the drag commits. Segments and joints are matched by position:
+ * geometry the rebuild adds keeps its new ids.
+ */
+export function remapBranchGeometryIds(rebuilt: Branch, previous: Branch): Branch {
+    const jointIdMap = new Map<string, string>();
+
+    rebuilt.segments.forEach((segment, index) => {
+        const previousTopJoint = previous.segments[index]?.topJoint;
+        if (segment.topJoint && previousTopJoint) {
+            jointIdMap.set(segment.topJoint.id, previousTopJoint.id);
+        }
+    });
+
+    const remapJoint = (joint?: Joint): Joint | undefined => {
+        if (!joint) return joint;
+        const mappedId = jointIdMap.get(joint.id);
+        return mappedId ? { ...joint, id: mappedId } : joint;
+    };
+
+    const segments: Segment[] = rebuilt.segments.map((segment, index) => ({
+        ...segment,
+        id: previous.segments[index]?.id ?? segment.id,
+        topJoint: remapJoint(segment.topJoint),
+        bottomJoint: remapJoint(segment.bottomJoint),
+    }));
+
+    const contactCone: ContactCone | undefined = rebuilt.contactCone
+        ? {
+            ...rebuilt.contactCone,
+            id: previous.contactCone?.id ?? rebuilt.contactCone.id,
+            socketJointId: rebuilt.contactCone.socketJointId
+                ? jointIdMap.get(rebuilt.contactCone.socketJointId) ?? rebuilt.contactCone.socketJointId
+                : rebuilt.contactCone.socketJointId,
+        }
+        : rebuilt.contactCone;
+
+    return { ...rebuilt, segments, contactCone };
 }

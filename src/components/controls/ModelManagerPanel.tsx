@@ -416,7 +416,6 @@ export function ModelManagerPanel({
             </span>
           </div>
         )}
-        hideDivider={!expanded}
       />
 
       {expanded && (

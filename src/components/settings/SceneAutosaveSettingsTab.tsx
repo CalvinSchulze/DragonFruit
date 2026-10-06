@@ -152,6 +152,7 @@ export function SceneAutosaveSettingsTab() {
   }, [desktopAvailable, resolvedAutosavePath, _]);
 
   const debounceSeconds = Math.round(settings.debounceMs / 1000);
+  const cooldownSeconds = Math.round(settings.cooldownMs / 1000);
   const capMinutes = Math.round(settings.capMs / 60_000);
 
   return (
@@ -239,6 +240,40 @@ export function SceneAutosaveSettingsTab() {
             }}
           >
             <div>
+              <div className="text-xs font-semibold" style={{ color: 'var(--text-strong)' }}>{_(msg`Autosave cooldown`)}</div>
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{_(msg`After an autosave, defer further automatic saves until this interval ends.`)}</div>
+            </div>
+            <div className="inline-flex items-center gap-2">
+              <NumberInput
+                min={15}
+                max={900}
+                step={5}
+                value={cooldownSeconds}
+                onChange={(next) => {
+                  if (!Number.isFinite(next)) return;
+                  const nextSeconds = Math.max(15, Math.min(900, Math.round(next)));
+                  setSettings((prev) => ({
+                    ...prev,
+                    cooldownMs: nextSeconds * 1000,
+                    capMs: Math.max(prev.capMs, nextSeconds * 1000),
+                  }));
+                }}
+                className="ui-input h-[34px] w-[120px] pl-2.5 pr-5 py-1.5 text-sm"
+                disabled={!settings.enabled}
+              />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{_(msg({ message: 'sec', comment: 'Unit suffix after a seconds input box. Keep it abbreviated.' }))}</span>
+            </div>
+          </div>
+
+          <div
+            className="rounded-md border px-2.5 py-2 flex items-center justify-between gap-3"
+            style={{
+              borderColor: 'var(--border-subtle)',
+              background: 'var(--surface-0)',
+              opacity: settings.enabled ? 1 : 0.68,
+            }}
+          >
+            <div>
               <div className="text-xs font-semibold" style={{ color: 'var(--text-strong)' }}>{_(msg`Maximum autosave interval`)}</div>
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{_(msg`For continuous edits, save at least this often.`)}</div>
             </div>
@@ -253,7 +288,7 @@ export function SceneAutosaveSettingsTab() {
                   const nextMinutes = Math.max(1, Math.min(60, Math.round(next)));
                   setSettings((prev) => ({
                     ...prev,
-                    capMs: Math.max(nextMinutes * 60_000, prev.debounceMs),
+                    capMs: Math.max(nextMinutes * 60_000, prev.debounceMs, prev.cooldownMs),
                   }));
                 }}
                 className="ui-input h-[34px] w-[120px] pl-2.5 pr-5 py-1.5 text-sm"
@@ -303,8 +338,11 @@ export function SceneAutosaveSettingsTab() {
       </section>
 
       <section className="rounded-lg border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-        <div className="flex items-center justify-between gap-2">
-          <div>
+        <div className="flex items-start gap-2">
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-md border shrink-0" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--surface-2), transparent 8%)' }}>
+            <HardDrive className="h-4 w-4" style={{ color: 'var(--accent)' }} />
+          </span>
+          <div className="min-w-0 flex-1">
             <h4 className="text-sm font-semibold" style={{ color: 'var(--text-strong)' }}>{_(msg`Autosave Status`)}</h4>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
               <Trans>Desktop-only diagnostics for autosave files and recovery state.</Trans>
@@ -314,77 +352,80 @@ export function SceneAutosaveSettingsTab() {
             type="button"
             onClick={() => { void handleRefresh(); }}
             disabled={!desktopAvailable || busy !== 'none'}
-            className="ui-button ui-button-secondary !h-8 !px-2.5 !py-0 text-xs inline-flex items-center gap-1.5 disabled:opacity-60"
+            className="ui-button ui-button-secondary !h-8 !px-2.5 !py-0 text-xs inline-flex items-center gap-1.5 disabled:opacity-60 shrink-0"
           >
             {busy === 'refresh' || loadingStatus ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
             <Trans>Refresh</Trans>
           </button>
         </div>
 
-        <div className="mt-2 rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
-          {!desktopAvailable ? (
-            <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              <Trans>Autosave files are available in the DragonFruit desktop build.</Trans>
-            </div>
-          ) : loadingStatus ? (
-            <div className="text-xs inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              <Trans>Loading autosave status…</Trans>
-            </div>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}>{_(msg`Recovery state`)}</div>
-                <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
-                  {manifest == null
-                    ? _(msg`No autosave manifest found`)
-                    : manifest.clean
-                      ? _(msg`Clean (no pending recovery)`)
-                      : _(msg`Recovery available`)}
-                </div>
-              </div>
-
-              <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}>{_(msg`Last autosave timestamp`)}</div>
-                <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
-                  {manifest?.savedAt
-                    ? new Date(manifest.savedAt).toLocaleString(i18n.locale)
-                    : _(msg({ message: 'Unknown', comment: 'Placeholder when the autosave timestamp could not be read.' }))}
-                </div>
-              </div>
-
-              {manifest?.lastError && (
-                <div className="rounded-md border px-2.5 py-2 sm:col-span-2 border-amber-500/40 bg-amber-500/10">
-                  <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-400">{_(msg`Standing Autosave Error`)}</div>
-                  <div className="mt-1 text-xs text-amber-200">{manifest.lastError}</div>
-                </div>
-              )}
-
-              <div className="rounded-md border px-2.5 py-2 sm:col-span-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}>{_(msg`Autosave scene file`)}</div>
-                <div className="mt-1 text-xs break-all" style={{ color: 'var(--text-strong)' }}>
-                  {resolvedAutosavePath ?? _(msg({ message: 'Unavailable', comment: 'Placeholder when the autosave file path could not be resolved.' }))}
-                </div>
-                <div className="mt-1.5 text-xs leading-snug" style={{ color: 'var(--text-muted)' }}>
-                  {resolvedAutosaveOrigin === 'sidecar'
-                    ? _(msg({
-                        message: 'A recovery copy is written beside each saved project, as <name>_autosave.voxl. It uses roughly as much disk as the project itself.',
-                        comment: '<name> is a literal placeholder in the filename, not markup — leave it as-is.',
-                      }))
-                    : _(msg`Recovery copies are written to the app data folder above.`)}
-                  {resolvedFallbackReason ? ` ${formatFallbackNotice(_, resolvedFallbackReason)}` : ''}
-                </div>
+        {!desktopAvailable ? (
+          <div className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+            <Trans>Autosave files are available in the DragonFruit desktop build.</Trans>
+          </div>
+        ) : loadingStatus ? (
+          <div className="mt-2 text-xs inline-flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Trans>Loading autosave status…</Trans>
+          </div>
+        ) : (
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}>{_(msg`Recovery state`)}</div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
+                {manifest == null
+                  ? _(msg`No autosave manifest found`)
+                  : manifest.clean
+                    ? _(msg`Clean (no pending recovery)`)
+                    : _(msg`Recovery available`)}
               </div>
             </div>
-          )}
-        </div>
+
+            <div className="rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}>{_(msg`Last autosave timestamp`)}</div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--text-strong)' }}>
+                {manifest?.savedAt
+                  ? new Date(manifest.savedAt).toLocaleString(i18n.locale)
+                  : _(msg({ message: 'Unknown', comment: 'Placeholder when the autosave timestamp could not be read.' }))}
+              </div>
+            </div>
+
+            {manifest?.lastError && (
+              <div className="rounded-md border px-2.5 py-2 sm:col-span-2 border-amber-500/40 bg-amber-500/10">
+                <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-400">{_(msg`Standing Autosave Error`)}</div>
+                <div className="mt-1 text-xs text-amber-200">{manifest.lastError}</div>
+              </div>
+            )}
+
+            <div className="rounded-md border px-2.5 py-2 sm:col-span-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+              <div className="text-[11px] uppercase tracking-wide font-semibold" style={{ color: 'var(--text-muted)' }}>{_(msg`Autosave scene file`)}</div>
+              <div className="mt-1 text-xs break-all" style={{ color: 'var(--text-strong)' }}>
+                {resolvedAutosavePath ?? _(msg({ message: 'Unavailable', comment: 'Placeholder when the autosave file path could not be resolved.' }))}
+              </div>
+              <div className="mt-1.5 text-xs leading-snug" style={{ color: 'var(--text-muted)' }}>
+                {resolvedAutosaveOrigin === 'sidecar'
+                  ? _(msg({
+                      message: 'A recovery copy is written beside each saved project, as <name>_autosave.voxl. It uses roughly as much disk as the project itself.',
+                      comment: '<name> is a literal placeholder in the filename, not markup — leave it as-is.',
+                    }))
+                  : _(msg`Recovery copies are written to the app data folder above.`)}
+                {resolvedFallbackReason ? ` ${formatFallbackNotice(_, resolvedFallbackReason)}` : ''}
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <button
             type="button"
             onClick={() => { void handleMarkClean(); }}
             disabled={!desktopAvailable || busy !== 'none'}
-            className="ui-button ui-button-secondary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            className="ui-button !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            style={{
+              borderColor: 'color-mix(in srgb, #ef4444, var(--border-subtle) 45%)',
+              background: 'color-mix(in srgb, #ef4444, var(--surface-1) 86%)',
+              color: 'var(--danger)',
+            }}
           >
             {busy === 'mark-clean' ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertTriangle className="h-4 w-4" />}
             <Trans>Mark Recovery Clean</Trans>
@@ -393,7 +434,12 @@ export function SceneAutosaveSettingsTab() {
             type="button"
             onClick={() => { void handleRevealAutosave(); }}
             disabled={!desktopAvailable || !resolvedAutosavePath || busy !== 'none'}
-            className="ui-button ui-button-secondary !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            className="ui-button !h-9 !px-3 !py-0 text-sm inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent), var(--border-subtle) 45%)',
+              background: 'color-mix(in srgb, var(--accent), var(--surface-1) 86%)',
+              color: 'var(--accent)',
+            }}
           >
             {busy === 'reveal' ? <Loader2 className="h-4 w-4 animate-spin" /> : <HardDrive className="h-4 w-4" />}
             <Trans>Open Autosave Location</Trans>

@@ -106,7 +106,7 @@ export function Tooltip({ content, offsetY = 28, maxWidth = 260, wrapperClassNam
   const popover = show ? (
     <div
       ref={popoverRef}
-      className="fixed pointer-events-none z-50 rounded px-2 py-1.5 text-[11px] leading-tight font-medium shadow-lg"
+      className="fixed pointer-events-none z-[9999] rounded px-2 py-1.5 text-[11px] leading-tight font-medium shadow-lg"
       style={{
         left,
         top,

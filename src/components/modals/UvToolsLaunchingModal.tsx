@@ -8,20 +8,17 @@ import { ExternalLink, Loader2 } from 'lucide-react';
 type UvToolsLaunchingModalProps = {
   isOpen: boolean;
   filePath: string | null;
-  /** Called after UVTools launch completes (success or failure). */
-  onLaunchComplete: () => void;
 };
 
 /**
  * A non-dismissible modal shown while UVTools is being launched with the
  * sliced file. Displays an indeterminate progress bar and the target file path.
- * Cannot be closed via Escape, backdrop click, or any other interaction —
- * it auto-dismisses once UVTools reports completion via `onLaunchComplete`.
+ * Cannot be closed via Escape, backdrop click, or any other interaction — the
+ * caller dismisses it by clearing the launching path.
  */
 export function UvToolsLaunchingModal({
   isOpen,
   filePath,
-  onLaunchComplete,
 }: UvToolsLaunchingModalProps) {
   // Registering without a close handler swallows Escape instead of dismissing.
   useEscapeToClose(isOpen, undefined);

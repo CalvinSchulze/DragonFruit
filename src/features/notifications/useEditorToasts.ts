@@ -15,6 +15,13 @@ import type { SceneImportReport } from '@/features/scene/useSceneCollectionManag
  * (isSceneSaveInProgress / isPreSliceSceneSaveInProgress / isAutosaving) and the
  * scene import report via the single options object below.
  */
+/** Who got oriented — the stack renders the message, never this. */
+export type OrientationToastReport = {
+    id: number;
+    status: 'applied' | 'already-optimal';
+    modelName: string;
+};
+
 export type UseEditorToastsOptions = {
   /** External save-progress state, read by the save-toast machinery effect. */
   isSceneSaveInProgress: boolean;
@@ -37,6 +44,9 @@ export function useEditorToasts({
   const [isExportSuccessToastVisible, setIsExportSuccessToastVisible] = React.useState(false);
   const [exportErrorToast, setExportErrorToast] = React.useState<{ id: number; text: string } | null>(null);
   const [isExportErrorToastVisible, setIsExportErrorToastVisible] = React.useState(false);
+  const [orientationToast, setOrientationToast] = React.useState<OrientationToastReport | null>(null);
+  const [isOrientationToastVisible, setIsOrientationToastVisible] = React.useState(false);
+  const orientationToastFadeTimeoutRef = React.useRef<number | null>(null);
   const [isSaveToastVisible, setIsSaveToastVisible] = React.useState(false);
   const [isSaveToastAnimatedVisible, setIsSaveToastAnimatedVisible] = React.useState(false);
   // A mode rather than a label: the wording is resolved where it is rendered,
@@ -259,6 +269,18 @@ export function useEditorToasts({
     }, 4500);
   }, []);
 
+  const showOrientationToast = React.useCallback((report: Omit<OrientationToastReport, 'id'>) => {
+    setOrientationToast({ ...report, id: Date.now() });
+    setIsOrientationToastVisible(true);
+    if (orientationToastFadeTimeoutRef.current !== null) {
+      window.clearTimeout(orientationToastFadeTimeoutRef.current);
+    }
+    orientationToastFadeTimeoutRef.current = window.setTimeout(() => {
+      setIsOrientationToastVisible(false);
+      orientationToastFadeTimeoutRef.current = null;
+    }, 6000);
+  }, []);
+
   return {
     historyActionToast,
     setHistoryActionToast,
@@ -287,6 +309,7 @@ export function useEditorToasts({
     sceneImportToastFadeTimeoutRef,
     exportSuccessToastFadeTimeoutRef,
     exportErrorToastFadeTimeoutRef,
+    orientationToastFadeTimeoutRef,
     saveToastHideTimeoutRef,
     saveToastClearTimeoutRef,
     saveToastEnterRafRef,
@@ -301,5 +324,8 @@ export function useEditorToasts({
     setPrintingMonitorError,
     handleExportSuccess,
     showOperationError,
+    orientationToast,
+    isOrientationToastVisible,
+    showOrientationToast,
   };
 }

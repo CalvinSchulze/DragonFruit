@@ -56,6 +56,29 @@ export type SelectDropdownProps<T extends string | number = string> = {
 };
 
 /**
+ * The insets that centre a trigger's label in the space **left of the chevron**.
+ *
+ * The label is centred inside the trigger's padding box, so what that box is decides
+ * where "centred" lands. The usual `pl-2.5 pr-10` — small left, large right for the
+ * chevron — centres it left of the control by half the difference with a lopsided gap
+ * before the chevron. Equal insets put it on the control's centre, which is not it
+ * either: the space the label reads as belonging to is the one the chevron does not
+ * occupy.
+ *
+ * So the box *is* that space: from the control's left edge to the chevron's left edge.
+ * The chevron's footprint is `right-3` (12px) plus its `h-3.5 w-3.5` icon (14px) — 26px
+ * in from the right edge — hence no left inset and 26px on the right. The label then
+ * centres on `(width - 26) / 2`, which is 13px left of the control's centre and puts
+ * the same space on either side of the text *within the space a user reads as the
+ * field's*. Pair with `textAlign: 'center'`, which this carries.
+ */
+export const CENTERED_SELECT_PADDING: React.CSSProperties = {
+  paddingLeft: 0,
+  paddingRight: 26,
+  textAlign: 'center',
+};
+
+/**
  * Generic reusable dropdown component with consistent styling.
  * Features a custom chevron icon and clean design.
  */
@@ -263,7 +286,7 @@ export function SelectDropdown<T extends string | number = string>({
               setIsOpen(false);
             }
           }}
-          className={`ui-input rounded-[4px] relative w-full h-[36px] px-2.5 pr-10 leading-tight text-sm disabled:opacity-55 disabled:cursor-not-allowed inline-flex items-center text-left ${selectClassName}`}
+          className={`ui-input rounded-[4px] relative w-full h-[36px] px-2.5 pr-10 leading-tight text-sm disabled:pointer-events-none disabled:opacity-55 disabled:cursor-not-allowed inline-flex items-center text-left ${selectClassName}`}
           style={{
             ...selectStyle,
             ...(isOpen

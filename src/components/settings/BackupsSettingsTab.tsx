@@ -1279,16 +1279,15 @@ export function BackupsSettingsTab() {
               </button>
             </div>
 
-            <div className="mt-2">
-              <div className="max-h-64 overflow-auto rounded-md border custom-scrollbar" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
-                {historyItems.length === 0 ? (
-                  <div className="px-3 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    <Trans>No history snapshots yet. New syncs will appear here.</Trans>
-                  </div>
-                ) : (
-                  <ul className="p-1.5 space-y-1.5">
-                    {historyItems.map((item) => (
-                      <li key={item.id} className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+          <div className="mt-2 max-h-64 overflow-auto custom-scrollbar">
+            {historyItems.length === 0 ? (
+              <div className="px-3 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <Trans>No history snapshots yet. New syncs will appear here.</Trans>
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {historyItems.map((item) => (
+                  <li key={item.id} className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}>
                         <button
                           type="button"
                           onClick={() => { void handleViewHistory(item.id); }}
@@ -1327,7 +1326,6 @@ export function BackupsSettingsTab() {
                 )}
               </div>
             </div>
-          </div>
         </section>
       )}
 

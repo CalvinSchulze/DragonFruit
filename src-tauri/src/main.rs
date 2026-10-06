@@ -1,11 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod astar;
 mod mesh_minima;
 mod mesh_repair;
+mod mesh_refine;
 mod network;
+mod ao_vertex;
 mod overhang;
-mod sdf;
 mod spacemouse;
 mod updater_channel;
 
@@ -70,6 +70,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::{InvokeBody, Response};
 use tauri::Emitter;
 use tauri::Manager;
+use base64::Engine as _;
 
 // Runtime type aliases — the feat/cef branch requires an explicit runtime
 // generic. These select Cef or Wry based on the active cargo feature.
@@ -3928,6 +3929,80 @@ async fn launch_external_process(exe_path: String, file_arg: String) -> Result<(
 
     Ok(())
 }
+/// Fetch a sponsor avatar via Rust (bypasses WebView CORS).
+/// Only `https` URLs from the Open Collective avatar hosts are allowed,
+/// mirroring the allowlist in `src/app/api/sponsor-avatar/route.ts`.
+/// Returns a `data:` URL so the frontend can render it without further network.
+#[tauri::command]
+async fn fetch_sponsor_avatar(url: String) -> Result<String, String> {
+    let trimmed = url.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("URL is empty".to_string());
+    }
+    let parsed = url::Url::parse(&trimmed).map_err(|e| format!("Invalid url: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Only https URLs are allowed".to_string());
+    }
+    let host = parsed.host_str().ok_or("Missing host")?.to_ascii_lowercase();
+    const ALLOWED_HOSTS: &[&str] = &[
+        "opencollective-production.s3.us-west-1.amazonaws.com",
+        "opencollective-production.s3-us-west-1.amazonaws.com",
+        "images.opencollective.com",
+        "avatars.githubusercontent.com",
+    ];
+    if !ALLOWED_HOSTS.contains(&host.as_str()) {
+        return Err(format!("Host not allowed: {host}"));
+    }
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(trimmed)
+        .header("Accept", "image/*,*/*")
+        .send()
+        .await
+        .map_err(|e| format!("Fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Upstream {}", resp.status()));
+    }
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("image/png")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|e| format!("Read failed: {e}"))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{content_type};base64,{b64}"))
+}
+/// Fetch external JSON/text via Rust (bypasses WebView CORS) for sponsors list.
+/// Only `https` URLs from `opencollective.com` are allowed.
+#[tauri::command]
+async fn fetch_external_text(url: String) -> Result<String, String> {
+    let trimmed = url.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("URL is empty".to_string());
+    }
+    let parsed = url::Url::parse(&trimmed).map_err(|e| format!("Invalid url: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Only https URLs are allowed".to_string());
+    }
+    let host = parsed.host_str().ok_or("Missing host")?.to_ascii_lowercase();
+    const ALLOWED_HOSTS: &[&str] = &["opencollective.com", "www.opencollective.com", "api.opencollective.com"];
+    if !ALLOWED_HOSTS.contains(&host.as_str()) {
+        return Err(format!("Host not allowed: {host}"));
+    }
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(trimmed)
+        .header("Accept", "application/json,*/*")
+        .send()
+        .await
+        .map_err(|e| format!("Fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Upstream {}", resp.status()));
+    }
+    let text = resp.text().await.map_err(|e| format!("Read failed: {e}"))?;
+    Ok(text)
+}
 
 /// Returns the path to the log-level preference file.
 /// This is intentionally computed with raw env vars so it can be called
@@ -4263,6 +4338,9 @@ fn main() {
                         }
                     }
                     window_state::track(&window);
+                    // Keep navlib's `active` / `focus` in step with the window, so
+                    // the driver stops routing the puck to a backgrounded app.
+                    spacemouse::track_window_focus(&window);
 
                     // On macOS, reveal immediately so a frontend startup hiccup
                     // can't leave the app invisible when created as hidden.
@@ -4325,14 +4403,17 @@ fn main() {
             mesh_minima::scan_mesh_minima_from_path,
             mesh_minima::scan_voxel_islands_from_path,
             mesh_minima::scan_islands_from_path,
+            ao_vertex::bake_vertex_occlusion,
             overhang::scan_overhangs,
             export_mesh_file,
             save_print_file,
             save_print_file_from_path,
             pick_save_path,
             pick_open_files,
-            experiments::set_experiment_overrides,
             get_launch_scene_files,
+            experiments::set_experiment_overrides,
+            fetch_sponsor_avatar,
+            fetch_external_text,
             get_slicer_engine_version,
             notify_launch_scene_handoff,
             focus_main_window_command,
@@ -4362,6 +4443,7 @@ fn main() {
             reveal_in_file_manager,
             open_external_url,
             launch_external_process,
+            fetch_sponsor_avatar,
             discover_uvtools_path,
             set_log_level_pref,
             read_log_tail,
@@ -4373,6 +4455,7 @@ fn main() {
             network::plugin_network_request,
             network::ensure_rtsp_relay,
             mesh_repair::mesh_analyze_from_path,
+            mesh_refine::refine_mesh_soup,
             mesh_repair::mesh_analyze_staged,
             mesh_repair::mesh_repair_from_path,
             mesh_repair::mesh_repair_staged,
@@ -4407,10 +4490,6 @@ fn main() {
             mesh_repair::mesh_organic_cut_read_tenon,
             mesh_repair::mesh_repair_read_positions,
             mesh_repair::load_stl_file,
-            sdf::compute_sdf_from_staged,
-            sdf::compute_heightmap_from_staged,
-            sdf::invalidate_sdf_cache,
-            astar::run_astar_pathfinding,
             updater_channel::check_updates,
             updater_channel::perform_update,
             updater_channel::get_saved_update_channel,

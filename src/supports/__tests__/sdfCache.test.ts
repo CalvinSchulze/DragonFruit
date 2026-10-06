@@ -5,6 +5,7 @@ import * as THREE from 'three';
 
 import { initializeBVH, accelerateGeometry } from '../../utils/bvh';
 import { SDFCache } from '../PlacementLogic/Pathfinding/SDFCache';
+import { ColumnClearanceMap } from '../PlacementLogic/Pathfinding/ColumnClearanceMap';
 
 function makeSphereMesh(): THREE.Mesh {
     initializeBVH();
@@ -90,4 +91,53 @@ test('refreshMatrix invalidates cached distances after a move', () => {
     // Sphere now at (0,0,10): the same world point is on/inside the sphere.
     const after = sdf.distanceAt(0, 0, 8);
     assert.ok(after <= 0.5, `expected near-zero/inside after move, got ${after}`);
+});
+
+test('a prewarmed clearance is ready without disturbing the one in use', () => {
+    const mesh = makeSphereMesh();
+    const sdf = new SDFCache(mesh, { cellSize: 0.5 });
+
+    const built: number[] = [];
+    const build = ColumnClearanceMap.build;
+    ColumnClearanceMap.build = ((meshArg, clearanceMm, cellMm) => {
+        built.push(clearanceMm);
+        return build(meshArg, clearanceMm, cellMm);
+    }) as typeof ColumnClearanceMap.build;
+
+    try {
+        // Hovering at the active preset's clearance, then building the map for a
+        // pinned preset while the thread is idle, then switching to it: the
+        // switch must find the map already there.
+        assert.equal(sdf.enableColumnMap(0.9, 0.2), true);
+        sdf.prewarmColumnMap(1.1, 0.2);
+        assert.equal(sdf.enableColumnMap(0.9, 0.2), true);
+        assert.equal(sdf.enableColumnMap(1.1, 0.2), true);
+        assert.deepEqual(built, [0.9, 1.1], 'the switch must reuse the prewarmed map');
+    } finally {
+        ColumnClearanceMap.build = build;
+    }
+});
+
+test('a clearance already built is reused instead of built again', () => {
+    const mesh = makeSphereMesh();
+    const sdf = new SDFCache(mesh, { cellSize: 0.5 });
+
+    const built: number[] = [];
+    const build = ColumnClearanceMap.build;
+    ColumnClearanceMap.build = ((meshArg, clearanceMm, cellMm) => {
+        built.push(clearanceMm);
+        return build(meshArg, clearanceMm, cellMm);
+    }) as typeof ColumnClearanceMap.build;
+
+    try {
+        assert.equal(sdf.enableColumnMap(0.9, 0.2), true);
+        assert.equal(sdf.enableColumnMap(1.4, 0.2), true);
+        // The clearance comes from the shaft diameter, so this is the cycle a
+        // preset switch makes: away from a preset and back to it. The build is
+        // tens of milliseconds over every vertex, and it must not repeat.
+        assert.equal(sdf.enableColumnMap(0.9, 0.2), true);
+        assert.deepEqual(built, [0.9, 1.4], 'the third call must reuse the map built for 0.9');
+    } finally {
+        ColumnClearanceMap.build = build;
+    }
 });

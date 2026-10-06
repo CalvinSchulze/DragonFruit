@@ -19,10 +19,9 @@ interface CardHeaderProps {
   className?: string;
   left: React.ReactNode;
   right?: React.ReactNode;
-  hideDivider?: boolean;
 }
 
-export function CardHeader({ className, left, right, hideDivider = false }: CardHeaderProps) {
+export function CardHeader({ className, left, right }: CardHeaderProps) {
   return (
     <div
       data-panel-drag-handle="true"

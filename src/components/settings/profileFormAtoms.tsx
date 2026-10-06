@@ -20,7 +20,11 @@ import {
     getActivePrinterProfile,
     getProfileStoreSnapshot,
 } from '@/features/profiles/profileStore';
-import { getProfileLocalMaterialSettingsAdapter } from '@/features/plugins/pluginRegistry';
+import {
+    getProfileLocalMaterialSettingsAdapter,
+    type ProfileLocalMaterialSettingsAdapter,
+} from '@/features/plugins/pluginRegistry';
+import type { LocalMaterialFieldSchema } from '@/features/plugins/complexPluginContracts';
 import { calculateTipOffset } from '@/supports/rendering/calculateTipOffset';
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
@@ -121,7 +125,13 @@ export function FieldTagChip({ tag, color, compact = false }: FieldTagChipProps)
 
 // ─── LabeledInput ─────────────────────────────────────────────────────────────
 
-function FieldHelpTooltip({ label, help }: { label: string; help: string }) {
+/**
+ * The ⓘ affordance a labelled field puts beside its label: the field's help
+ * text, on a hover/focus-only popover. Exported so a control that is not one of
+ * the labelled inputs below (a segmented row) carries the same affordance
+ * instead of a second one.
+ */
+export function FieldHelpTooltip({ label, help }: { label: string; help: string }) {
     const [hovered, setHovered] = React.useState(false);
 
     return (
@@ -212,10 +222,19 @@ type LabeledNumberInputProps = {
     value: number;
     step?: number;
     precision?: number;
+    /** Native tooltip on the input itself, for callers that show the same help
+     *  text as a `title` as well as through the ⓘ affordance. */
+    title?: string;
+    /** The unit the value is in, e.g. `mm`. Rendered **inside** the field rather
+     *  than in the label, which is the Support Studio convention — so a label reads
+     *  `Min Island Size`, not `Min Island Size (mm²)`. A `tag` chip claims the same
+     *  right-hand space, so a field carries one or the other. The stepper's carets
+     *  still announce the unit either way. */
+    unit?: string;
     onChange: (value: number) => void;
 };
 
-export function LabeledNumberInput({ label, helpText, tag, color, disabled = false, value, step: propStep, precision, onChange }: LabeledNumberInputProps) {
+export function LabeledNumberInput({ label, helpText, tag, color, disabled = false, value, step: propStep, precision, title, unit, onChange }: LabeledNumberInputProps) {
     const safeValue = clampNonNegativeNumber(value);
     const formatVal = React.useCallback((val: number) => {
         if (precision !== undefined) return val.toFixed(precision);
@@ -228,6 +247,11 @@ export function LabeledNumberInput({ label, helpText, tag, color, disabled = fal
     const accent = (typeof color === 'string' && color.trim().length > 0)
         ? color.trim()
         : tone?.fallbackColor ?? null;
+    // A tag chip and a unit want the same right-hand space, so a field shows one.
+    const showUnit = Boolean(unit) && !tag;
+    // The carets name the field for assistive tech, and the unit is part of the
+    // name even though it is no longer part of the visible label.
+    const spokenLabel = showUnit ? `${label} (${unit})` : label;
 
     React.useEffect(() => {
         if (isFocused) return;
@@ -274,6 +298,7 @@ export function LabeledNumberInput({ label, helpText, tag, color, disabled = fal
                     type="text"
                     disabled={disabled}
                     value={localValue}
+                    title={title}
                     onChange={(event) => {
                         if (event.target.value.includes('-')) return;
                         setLocalValue(event.target.value);
@@ -296,7 +321,7 @@ export function LabeledNumberInput({ label, helpText, tag, color, disabled = fal
                             nudge(-1);
                         }
                     }}
-                    className={`ui-input w-full h-[36px] pl-2.5 ${tag ? 'pr-20' : 'pr-6'} leading-tight text-sm no-spinners ${disabled ? 'opacity-55 cursor-not-allowed' : ''}`}
+                    className={`ui-input w-full h-[36px] pl-2.5 ${tag ? 'pr-20' : showUnit ? 'pr-14' : 'pr-6'} leading-tight text-sm no-spinners disabled:pointer-events-none ${disabled ? 'opacity-55 cursor-not-allowed' : ''}`}
                     style={accent ? {
                         background: `color-mix(in srgb, ${accent} 7%, var(--surface-1))`,
                         borderColor: `color-mix(in srgb, ${accent} 24%, var(--border-subtle))`,
@@ -305,24 +330,36 @@ export function LabeledNumberInput({ label, helpText, tag, color, disabled = fal
 
                 <FieldTagChip tag={tag} color={color} />
 
+                {/* The unit, inside the field and to the left of the carets — the
+                    Support Studio convention, which is why the label is the name
+                    alone. `pr-14` above is what it sits in. */}
+                {showUnit && (
+                    <span
+                        className="pointer-events-none absolute inset-y-0 right-6 z-10 flex items-center text-[11px] font-semibold"
+                        style={{ color: 'var(--text-muted)' }}
+                    >
+                        {unit}
+                    </span>
+                )}
+
                 <div className="absolute inset-y-0 right-1 z-20 flex w-4 flex-col items-center justify-center gap-0.5">
                     <button
                         type="button"
-                        className="inline-flex h-3 w-3 items-center justify-center rounded hover:bg-white/10"
+                        className="inline-flex h-3 w-3 items-center justify-center rounded hover:bg-white/10 disabled:pointer-events-none"
                         onClick={() => nudge(1)}
                         disabled={disabled}
                         tabIndex={-1}
-                        aria-label={`Increase ${label}`}
+                        aria-label={`Increase ${spokenLabel}`}
                     >
                         <ChevronUp className="h-2.5 w-2.5" />
                     </button>
                     <button
                         type="button"
-                        className="inline-flex h-3 w-3 items-center justify-center rounded hover:bg-white/10"
+                        className="inline-flex h-3 w-3 items-center justify-center rounded hover:bg-white/10 disabled:pointer-events-none"
                         onClick={() => nudge(-1)}
                         disabled={disabled}
                         tabIndex={-1}
-                        aria-label={`Decrease ${label}`}
+                        aria-label={`Decrease ${spokenLabel}`}
                     >
                         <ChevronDown className="h-2.5 w-2.5" />
                     </button>
@@ -337,6 +374,7 @@ export function LabeledNumberInput({ label, helpText, tag, color, disabled = fal
 type LabeledTwoStageNumberInputProps = {
     label: string;
     helpText?: string;
+    disabled?: boolean;
     firstValue: number;
     secondValue: number;
     firstMin?: number;
@@ -356,6 +394,7 @@ type LabeledTwoStageNumberInputProps = {
 export function LabeledTwoStageNumberInput({
     label,
     helpText,
+    disabled = false,
     firstValue,
     secondValue,
     firstMin,
@@ -394,6 +433,7 @@ export function LabeledTwoStageNumberInput({
                         min={firstMin}
                         max={firstMax}
                         step={firstStep}
+                        disabled={disabled}
                         showStepper
                         aria-label={`${label} stage 1`}
                         className={`ui-input w-full h-[36px] px-2.5 ${firstTag ? 'pr-24' : 'pr-2.5'} text-sm leading-tight`}
@@ -412,6 +452,7 @@ export function LabeledTwoStageNumberInput({
                         min={secondMin}
                         max={secondMax}
                         step={secondStep}
+                        disabled={disabled}
                         showStepper
                         aria-label={`${label} stage 2`}
                         className={`ui-input w-full h-[36px] px-2.5 ${secondTag ? 'pr-24' : 'pr-2.5'} text-sm leading-tight`}
@@ -467,9 +508,11 @@ type LabeledToggleInputProps = {
     checked: boolean;
     onChange: (value: boolean) => void;
     disabled?: boolean;
+    /** Native tooltip on the switch itself, beside the ⓘ affordance. */
+    title?: string;
 };
 
-export function LabeledToggleInput({ label, helpText, checked, onChange, disabled = false }: LabeledToggleInputProps) {
+export function LabeledToggleInput({ label, helpText, checked, onChange, disabled = false, title }: LabeledToggleInputProps) {
     return (
         <label className="space-y-1 block">
             <span className="ui-label font-medium inline-flex items-center gap-1.5">
@@ -480,12 +523,13 @@ export function LabeledToggleInput({ label, helpText, checked, onChange, disable
                 type="button"
                 role="switch"
                 aria-checked={checked}
+                title={title}
                 onClick={() => {
                     if (disabled) return;
                     onChange(!checked);
                 }}
                 disabled={disabled}
-                className={`ui-input w-full h-[36px] px-2.5 leading-tight text-sm inline-flex items-center justify-between ${disabled ? 'opacity-55 cursor-not-allowed' : ''}`}
+                className={`ui-input w-full h-[36px] px-2.5 leading-tight text-sm inline-flex items-center justify-between disabled:pointer-events-none ${disabled ? 'opacity-55 cursor-not-allowed' : ''}`}
                 style={disabled
                     ? {
                         borderColor: 'var(--border-subtle)',
@@ -715,6 +759,8 @@ type MaterialAntiAliasingSectionProps = {
     onChange: React.Dispatch<React.SetStateAction<MaterialDraft>>;
     lockActivationToggles?: boolean;
     printerDitherBitDepth?: number | null;
+    /** Raw bit depth declared by the printer profile, before the 2..7 dither clamp. */
+    printerPanelBitDepth?: number | null;
 };
 
 const AA_STRENGTH_PRESETS = [4, 8, 16, 32] as const;
@@ -872,7 +918,7 @@ function AaInlineHelp({ children }: { children: React.ReactNode }) {
     return <p className="text-xs leading-snug" style={{ color: 'var(--text-muted)' }}>{children}</p>;
 }
 
-export function MaterialAntiAliasingSection({ draft, onChange, lockActivationToggles = false, printerDitherBitDepth = null }: MaterialAntiAliasingSectionProps) {
+export function MaterialAntiAliasingSection({ draft, onChange, lockActivationToggles = false, printerDitherBitDepth = null, printerPanelBitDepth = null }: MaterialAntiAliasingSectionProps) {
     const settings = {
         ...DEFAULT_MATERIAL_ANTI_ALIASING_SETTINGS,
         ...(draft.antiAliasingSettings ?? {}),
@@ -896,15 +942,30 @@ export function MaterialAntiAliasingSection({ draft, onChange, lockActivationTog
     const duplicateZEnabled = is3daa && sampleSteps >= 16;
     const customZBlurEnabled = is3daa && settings.useCustomZBlurRadius;
     const gaussianZEnabled = customZBlurEnabled && settings.zBlurKernel === 'gaussian' && settings.zBlurRadiusLayers > 0;
-    const hasKnownPrinterDitherBitDepth = Number.isFinite(printerDitherBitDepth)
+    // `printerDitherBitDepth` is already narrowed by the callers to the 2..7 range
+    // dithering can actually target, so a non-null value means "this panel cannot
+    // emit every 8-bit grey level" and dithering is mandatory.
+    const knownPrinterBitDepth = (Number.isFinite(printerDitherBitDepth)
         && printerDitherBitDepth != null
         && printerDitherBitDepth >= 2
-        && printerDitherBitDepth <= 7;
-    const knownPrinterBitDepth = hasKnownPrinterDitherBitDepth
+        && printerDitherBitDepth <= 7)
         ? Math.round(printerDitherBitDepth as number)
         : null;
-    const isNon8BitPrinter = knownPrinterBitDepth != null && knownPrinterBitDepth !== 8;
-    const effectiveDitherEnabled = isNon8BitPrinter ? true : settings.ditherEnabled;
+    const printerForcesDitherOn = knownPrinterBitDepth != null;
+    // An 8-bit (or deeper) panel emits the whole 8-bit ramp already, so dithering
+    // could only quantize the layer below the hardware's own resolution.
+    const panelBitDepth = (Number.isFinite(printerPanelBitDepth)
+        && printerPanelBitDepth != null
+        && printerPanelBitDepth > 0)
+        ? Math.round(printerPanelBitDepth as number)
+        : null;
+    const printerForcesDitherOff = panelBitDepth != null && panelBitDepth >= 8;
+    const ditherLockedByPrinter = printerForcesDitherOn || printerForcesDitherOff;
+    const effectiveDitherEnabled = printerForcesDitherOn
+        ? true
+        : printerForcesDitherOff
+            ? false
+            : settings.ditherEnabled;
     const [savedCurves, setSavedCurves] = React.useState<SavedCurve[]>(() => resolveMaterialAaSavedCurves());
     const [editingTarget, setEditingTarget] = React.useState<string | null>(null);
 
@@ -965,7 +1026,7 @@ export function MaterialAntiAliasingSection({ draft, onChange, lockActivationTog
                             updateAaSettings({
                                 enableCustomSettings: next,
                                 enableOverride: next ? overrideEnabled : false,
-                                ditherEnabled: next && isNon8BitPrinter ? true : settings.ditherEnabled,
+                                ditherEnabled: next ? effectiveDitherEnabled : settings.ditherEnabled,
                             });
                         }}
                         className="ui-input w-full h-[36px] px-2.5 leading-tight text-sm inline-flex items-center justify-between disabled:cursor-not-allowed disabled:opacity-45"
@@ -1361,13 +1422,15 @@ export function MaterialAntiAliasingSection({ draft, onChange, lockActivationTog
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 items-end">
                             <LabeledToggleInput
                                 label="Enable Dithering"
-                                helpText={isNon8BitPrinter
+                                helpText={printerForcesDitherOn
                                     ? `Automatically enabled for this printer because its LCD is ${knownPrinterBitDepth}-bit. Dithering bit depth is derived from the active printer profile.`
-                                    : 'Enable energy-based dithering to eliminate banding on shallow slopes. Dithering bit depth is derived from the active printer profile.'}
+                                    : printerForcesDitherOff
+                                        ? `Automatically disabled because this printer's LCD is ${panelBitDepth}-bit and can already emit every grayscale level. Dithering would quantize layers below the panel's own resolution.`
+                                        : 'Enable energy-based dithering to eliminate banding on shallow slopes. Dithering bit depth is derived from the active printer profile.'}
                                 checked={effectiveDitherEnabled}
-                                disabled={isNon8BitPrinter}
+                                disabled={ditherLockedByPrinter}
                                 onChange={(value) => {
-                                    if (isNon8BitPrinter) return;
+                                    if (ditherLockedByPrinter) return;
                                     updateAaSettings({ ditherEnabled: value });
                                 }}
                             />
@@ -1384,58 +1447,67 @@ export function MaterialAntiAliasingSection({ draft, onChange, lockActivationTog
                         </div>
                     </AaCard>
 
-                    <AaCard
-                        title="Support Adjustments"
-                        description="Controls anti-aliasing and penetration offsets applied to support and raft geometry."
-                    >
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                            <LabeledToggleInput
-                                label="Apply AA to Support Geometry"
-                                helpText="Disabled keeps supports crisp and binary. Enabled allows anti-aliased support edges too."
-                                checked={settings.aaOnSupports}
-                                onChange={(value) => updateAaSettings({ aaOnSupports: value })}
-                            />
-                            <AaSelectDropdown
-                                label="Tip Compensation Offset Mode"
-                                value={settings.tipOffsetMode}
-                                helpText="Automatic derives penetration offset from Z blur radius and layer height. Manual uses explicit distance."
-                                onChange={(value) => {
-                                    const nextMode = value as 'disabled' | 'auto' | 'manual';
-                                    if (nextMode === 'manual' && settings.tipOffsetMode === 'auto') {
-                                        updateAaSettings({ tipOffsetMode: 'manual', tipOffsetMm: calculatedOffset });
-                                    } else {
-                                        updateAaSettings({ tipOffsetMode: nextMode });
-                                    }
-                                }}
-                                options={[
-                                    { value: 'disabled', label: 'Disabled' },
-                                    { value: 'auto', label: 'Automatic' },
-                                    { value: 'manual', label: 'Manual' },
-                                ]}
-                            />
-                            {settings.tipOffsetMode !== 'disabled' && (
-                                <LabeledNumberInput
-                                    label="Compensation Distance (mm)"
-                                    helpText="Penetration depth of support tips into the model to compensate for grayscale AA curing softness."
-                                    disabled={settings.tipOffsetMode === 'auto'}
-                                    precision={3}
-                                    step={0.001}
-                                    value={settings.tipOffsetMode === 'auto' ? calculatedOffset : settings.tipOffsetMm}
-                                    onChange={(val) => updateAaSettings({ tipOffsetMm: val, tipOffsetMode: 'manual' })}
-                                />
-                            )}
-                            {settings.tipOffsetMode !== 'disabled' && (
-                                <LabeledToggleInput
-                                    label="Display Offset in Viewport"
-                                    helpText="Show calculated penetration distance indicator on support tips in 3D viewport."
-                                    checked={settings.tipOffsetDisplayInUi}
-                                    onChange={(value) => updateAaSettings({ tipOffsetDisplayInUi: value })}
-                                />
-                            )}
-                        </div>
-                    </AaCard>
                 </>
             )}
+            <AaCard
+                className="md:col-span-2"
+                title="Support Adjustments"
+                description="Controls support AA, penetration offsets, and 3DAA sliced contact size."
+            >
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 items-end">
+                    <LabeledToggleInput
+                        label="Apply AA to Support Geometry"
+                        helpText="Disabled keeps supports crisp and binary. Enabled allows anti-aliased support edges too."
+                        checked={settings.aaOnSupports}
+                        onChange={(value) => updateAaSettings({ aaOnSupports: value })}
+                    />
+                    <LabeledNumberInput
+                        label="3DAA tip shrink (%)"
+                        helpText="Reduces contact footprints only in 3DAA sliced output. Viewport supports and mesh exports keep their original dimensions."
+                        step={1}
+                        precision={0}
+                        value={settings.supportTipShrinkPercent}
+                        onChange={(value) => updateAaSettings({ supportTipShrinkPercent: Math.round(clampAaNumber(value, 10, 0, 90)) })}
+                    />
+                    <AaSelectDropdown
+                        label="Tip Compensation Offset Mode"
+                        value={overrideEnabled ? settings.tipOffsetMode : 'auto'}
+                        disabled={!overrideEnabled}
+                        helpText="Automatic derives penetration offset from Z blur radius and layer height. Enable Override Auto to change the mode."
+                        onChange={(value) => {
+                            const nextMode = value as 'disabled' | 'auto' | 'manual';
+                            if (nextMode === 'manual' && settings.tipOffsetMode === 'auto') {
+                                updateAaSettings({ tipOffsetMode: 'manual', tipOffsetMm: calculatedOffset });
+                            } else {
+                                updateAaSettings({ tipOffsetMode: nextMode });
+                            }
+                        }}
+                        options={[
+                            { value: 'disabled', label: 'Disabled' },
+                            { value: 'auto', label: 'Automatic' },
+                            { value: 'manual', label: 'Manual' },
+                        ]}
+                    />
+                    {overrideEnabled && settings.tipOffsetMode === 'manual' && (
+                        <LabeledNumberInput
+                            label="Compensation Distance (mm)"
+                            helpText="Penetration depth of support tips into the model to compensate for grayscale AA curing softness."
+                            precision={3}
+                            step={0.001}
+                            value={settings.tipOffsetMm}
+                            onChange={(val) => updateAaSettings({ tipOffsetMm: val })}
+                        />
+                    )}
+                    {(!overrideEnabled || settings.tipOffsetMode !== 'disabled') && (
+                        <LabeledToggleInput
+                            label="Display Offset in Viewport"
+                            helpText="Show calculated penetration distance indicator on support tips in 3D viewport."
+                            checked={settings.tipOffsetDisplayInUi}
+                            onChange={(value) => updateAaSettings({ tipOffsetDisplayInUi: value })}
+                        />
+                    )}
+                </div>
+            </AaCard>
         </div>
     );
 }
@@ -2206,7 +2278,7 @@ export function PluginLocalMaterialSettingsSections({
                     No custom settings are available for this tab.
                 </div>
             ) : (
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                     {sectionGroups.map((section) => {
                         const cardGroups = new Map<string, typeof section.fields>();
                         section.fields.forEach((field) => {
@@ -2229,7 +2301,7 @@ export function PluginLocalMaterialSettingsSections({
                             .sort((a, b) => a.cardOrder - b.cardOrder || a.cardTitle.localeCompare(b.cardTitle));
 
                         return (
-                            <div key={section.sectionId} className="space-y-1.5">
+                            <div key={section.sectionId} className="space-y-2.5">
                                 {!replacementMode && (
                                     <div className="ui-meta font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
                                         {section.sectionTitle}
@@ -2237,6 +2309,124 @@ export function PluginLocalMaterialSettingsSections({
                                 )}
                                 {cards.map((card) => {
                                     const renderedKeys = new Set<string>();
+
+                                    /** One plugin field's control, drawn the way its kind asks for. */
+                                    const renderFieldControl = (field: LocalMaterialFieldSchema) => {
+                                        const fieldValue = Object.prototype.hasOwnProperty.call(valuesForOutput, field.key)
+                                            ? valuesForOutput[field.key]
+                                            : field.defaultValue;
+                                        const sanitizedFieldValue = (field.kind === 'number' || field.kind === 'integer')
+                                            ? sanitizePluginNumericValue(field as PluginNumericFieldSchema, Number(fieldValue))
+                                            : fieldValue;
+
+                                        if (field.splitWithKey) {
+                                            const pairedField = card.fields.find((candidate) => candidate.key === field.splitWithKey);
+                                            if (pairedField) {
+                                                const pairedValue = Object.prototype.hasOwnProperty.call(valuesForOutput, pairedField.key)
+                                                    ? valuesForOutput[pairedField.key]
+                                                    : pairedField.defaultValue;
+                                                const sanitizedPairedValue = (pairedField.kind === 'number' || pairedField.kind === 'integer')
+                                                    ? sanitizePluginNumericValue(pairedField as PluginNumericFieldSchema, Number(pairedValue))
+                                                    : pairedValue;
+                                                renderedKeys.add(field.key);
+                                                renderedKeys.add(pairedField.key);
+                                                return (
+                                                    <LabeledTwoStageNumberInput
+                                                        key={field.key}
+                                                        label={field.label}
+                                                        helpText={field.description}
+                                                        disabled={field.disabled}
+                                                        firstValue={Number(sanitizedFieldValue)}
+                                                        secondValue={Number(sanitizedPairedValue)}
+                                                        firstMin={field.min}
+                                                        firstMax={field.max}
+                                                        firstStep={field.step}
+                                                        firstTag={field.tag}
+                                                        firstColor={field.color}
+                                                        secondMin={pairedField.min}
+                                                        secondMax={pairedField.max}
+                                                        secondStep={pairedField.step}
+                                                        secondTag={pairedField.tag}
+                                                        secondColor={pairedField.color}
+                                                        onFirstChange={(next) => {
+                                                            const clamped = sanitizePluginNumericValue(field as PluginNumericFieldSchema, next);
+                                                            setFieldValue(field.key, clamped);
+                                                        }}
+                                                        onSecondChange={(next) => {
+                                                            const clamped = sanitizePluginNumericValue(pairedField as PluginNumericFieldSchema, next);
+                                                            setFieldValue(pairedField.key, clamped);
+                                                        }}
+                                                    />
+                                                );
+                                            }
+                                        }
+
+                                        if (field.kind === 'spacer') {
+                                            return <div key={field.key} />;
+                                        }
+
+                                        if (field.kind === 'boolean') {
+                                            return (
+                                                <LabeledToggleInput
+                                                    key={field.key}
+                                                    label={field.label}
+                                                    helpText={field.description}
+                                                    checked={Boolean(fieldValue)}
+                                                    disabled={field.disabled}
+                                                    onChange={(next) => setFieldValue(field.key, next)}
+                                                />
+                                            );
+                                        }
+
+                                        if (field.kind === 'select' && Array.isArray(field.options) && field.options.length > 0) {
+                                            return (
+                                                <SelectDropdown
+                                                    key={field.key}
+                                                    label={field.label}
+                                                    value={String(fieldValue)}
+                                                    disabled={field.disabled}
+                                                    onChange={(nextValue) => setFieldValue(field.key, nextValue)}
+                                                    options={field.options.map((option) => ({
+                                                        value: option.value,
+                                                        label: option.label,
+                                                    }))}
+                                                    className="space-y-1 block"
+                                                    labelClassName="font-medium"
+                                                    selectClassName="w-full h-[36px] px-2.5 pr-10 leading-tight text-sm"
+                                                />
+                                            );
+                                        }
+
+                                        if (field.kind === 'number' || field.kind === 'integer') {
+                                            return (
+                                                <LabeledNumberInput
+                                                    key={field.key}
+                                                    label={field.label}
+                                                    helpText={field.description}
+                                                    tag={field.tag}
+                                                    color={field.color}
+                                                    disabled={field.disabled}
+                                                    value={Number(sanitizedFieldValue)}
+                                                    onChange={(next) => {
+                                                        const clamped = sanitizePluginNumericValue(field as PluginNumericFieldSchema, next);
+                                                        setFieldValue(field.key, clamped);
+                                                    }}
+                                                />
+                                            );
+                                        }
+
+                                        return (
+                                            <LabeledInput
+                                                key={field.key}
+                                                label={field.label}
+                                                helpText={field.description}
+                                                disabled={field.disabled}
+                                                value={String(fieldValue)}
+                                                onChange={(next) => setFieldValue(field.key, next)}
+                                            />
+                                        );
+                                    };
+
                                     return (
                                         <div
                                             key={`${section.sectionId}-${card.cardId}`}
@@ -2248,112 +2438,35 @@ export function PluginLocalMaterialSettingsSections({
                                                 {card.fields.map((field) => {
                                                     if (renderedKeys.has(field.key)) return null;
 
-                                                    const fieldValue = Object.prototype.hasOwnProperty.call(valuesForOutput, field.key)
-                                                        ? valuesForOutput[field.key]
-                                                        : field.defaultValue;
-                                                    const sanitizedFieldValue = (field.kind === 'number' || field.kind === 'integer')
-                                                        ? sanitizePluginNumericValue(field as PluginNumericFieldSchema, Number(fieldValue))
-                                                        : fieldValue;
+                                                    // A field with a `rowKey` claims one row for every field
+                                                    // of the card sharing it: one column per member, taken
+                                                    // across the card rather than inside the two-column grid,
+                                                    // its width the member's `rowWeight`. Each member is marked
+                                                    // rendered here, so a pair a member collapses claims its
+                                                    // partner's column too.
+                                                    const rowMembers = field.rowKey
+                                                        ? card.fields.filter((candidate) => candidate.rowKey === field.rowKey)
+                                                        : null;
 
-                                                    if (field.splitWithKey) {
-                                                        const pairedField = card.fields.find((candidate) => candidate.key === field.splitWithKey);
-                                                        if (pairedField) {
-                                                            const pairedValue = Object.prototype.hasOwnProperty.call(valuesForOutput, pairedField.key)
-                                                                ? valuesForOutput[pairedField.key]
-                                                                : pairedField.defaultValue;
-                                                            const sanitizedPairedValue = (pairedField.kind === 'number' || pairedField.kind === 'integer')
-                                                                ? sanitizePluginNumericValue(pairedField as PluginNumericFieldSchema, Number(pairedValue))
-                                                                : pairedValue;
-                                                            renderedKeys.add(field.key);
-                                                            renderedKeys.add(pairedField.key);
-                                                            return (
-                                                                <LabeledTwoStageNumberInput
-                                                                    key={field.key}
-                                                                    label={field.label}
-                                                                    helpText={field.description}
-                                                                    firstValue={Number(sanitizedFieldValue)}
-                                                                    secondValue={Number(sanitizedPairedValue)}
-                                                                    firstMin={field.min}
-                                                                    firstMax={field.max}
-                                                                    firstStep={field.step}
-                                                                    firstTag={field.tag}
-                                                                    firstColor={field.color}
-                                                                    secondMin={pairedField.min}
-                                                                    secondMax={pairedField.max}
-                                                                    secondStep={pairedField.step}
-                                                                    secondTag={pairedField.tag}
-                                                                    secondColor={pairedField.color}
-                                                                    onFirstChange={(next) => {
-                                                                        const clamped = sanitizePluginNumericValue(field as PluginNumericFieldSchema, next);
-                                                                        setFieldValue(field.key, clamped);
-                                                                    }}
-                                                                    onSecondChange={(next) => {
-                                                                        const clamped = sanitizePluginNumericValue(pairedField as PluginNumericFieldSchema, next);
-                                                                        setFieldValue(pairedField.key, clamped);
-                                                                    }}
-                                                                />
-                                                            );
-                                                        }
-                                                    }
+                                                    const cells: React.ReactNode[] = [];
+                                                    const weights: number[] = [];
+                                                    (rowMembers ?? [field]).forEach((member) => {
+                                                        if (renderedKeys.has(member.key)) return;
+                                                        renderedKeys.add(member.key);
+                                                        cells.push(renderFieldControl(member));
+                                                        weights.push(member.rowWeight ?? 1);
+                                                    });
 
-                                                    if (field.kind === 'spacer') {
-                                                        return <div key={field.key} />;
-                                                    }
-
-                                                    if (field.kind === 'boolean') {
-                                                        return (
-                                                            <LabeledToggleInput
-                                                                key={field.key}
-                                                                label={field.label}
-                                                                checked={Boolean(fieldValue)}
-                                                                onChange={(next) => setFieldValue(field.key, next)}
-                                                            />
-                                                        );
-                                                    }
-
-                                                    if (field.kind === 'select' && Array.isArray(field.options) && field.options.length > 0) {
-                                                        return (
-                                                            <SelectDropdown
-                                                                key={field.key}
-                                                                label={field.label}
-                                                                value={String(fieldValue)}
-                                                                onChange={(nextValue) => setFieldValue(field.key, nextValue)}
-                                                                options={field.options.map((option) => ({
-                                                                    value: option.value,
-                                                                    label: option.label,
-                                                                }))}
-                                                                className="space-y-1 block"
-                                                                labelClassName="font-medium"
-                                                                selectClassName="w-full h-[36px] px-2.5 pr-10 leading-tight text-sm"
-                                                            />
-                                                        );
-                                                    }
-
-                                                    if (field.kind === 'number' || field.kind === 'integer') {
-                                                        return (
-                                                            <LabeledNumberInput
-                                                                key={field.key}
-                                                                label={field.label}
-                                                                helpText={field.description}
-                                                                tag={field.tag}
-                                                                color={field.color}
-                                                                value={Number(sanitizedFieldValue)}
-                                                                onChange={(next) => {
-                                                                    const clamped = sanitizePluginNumericValue(field as PluginNumericFieldSchema, next);
-                                                                    setFieldValue(field.key, clamped);
-                                                                }}
-                                                            />
-                                                        );
-                                                    }
+                                                    if (!rowMembers) return cells[0];
 
                                                     return (
-                                                        <LabeledInput
+                                                        <div
                                                             key={field.key}
-                                                            label={field.label}
-                                                            helpText={field.description}
-                                                            value={String(fieldValue)}
-                                                            onChange={(next) => setFieldValue(field.key, next)}
-                                                        />
+                                                            className="grid gap-2 md:col-span-2"
+                                                            style={{ gridTemplateColumns: weights.map((weight) => `${weight}fr`).join(' ') }}
+                                                        >
+                                                            {cells}
+                                                        </div>
                                                     );
                                                 })}
                                             </div>
@@ -2369,6 +2482,49 @@ export function PluginLocalMaterialSettingsSections({
     );
 }
 
+// ─── PluginLocalMaterialSettingsMetaTab ───────────────────────────────────────
+
+type PluginLocalMaterialSettingsMetaTabProps = {
+    outputFormat: string;
+    settingsMode?: string;
+    adapter: ProfileLocalMaterialSettingsAdapter | null;
+    localSettingsByOutput: LocalSettingsByOutputDraft;
+    onChange: React.Dispatch<React.SetStateAction<LocalSettingsByOutputDraft>>;
+};
+
+/**
+ * The plugin fields a format files on the profile's own Meta tab.
+ *
+ * A format that records something about the file rather than the print declares
+ * its sections and cards with `tabId: 'meta'` and places the fields there. That
+ * keeps the format's metadata beside the profile identity instead of behind a
+ * second tab that reads like the profile's own. A format that places nothing on
+ * that tab renders nothing here, so the Meta tab keeps its stock body.
+ */
+export function PluginLocalMaterialSettingsMetaTab({
+    outputFormat,
+    settingsMode,
+    adapter,
+    localSettingsByOutput,
+    onChange,
+}: PluginLocalMaterialSettingsMetaTabProps) {
+    const hasMetaFields = (adapter?.fields ?? []).some((field) => field.placement?.tabId === 'meta');
+    if (!adapter || !hasMetaFields) return null;
+
+    return (
+        <PluginLocalMaterialSettingsSections
+            outputFormat={outputFormat}
+            settingsMode={settingsMode}
+            adapter={adapter}
+            localSettingsByOutput={localSettingsByOutput}
+            onChange={onChange}
+            replacementMode
+            activeTabId="meta"
+            showTabBar={false}
+        />
+    );
+}
+
 // ─── ReplacementMaterialEditorShell ───────────────────────────────────────────
 
 type ReplacementMaterialEditorShellProps = {
@@ -2378,6 +2534,7 @@ type ReplacementMaterialEditorShellProps = {
     draft: MaterialDraft;
     onDraftChange: React.Dispatch<React.SetStateAction<MaterialDraft>>;
     printerDitherBitDepth?: number | null;
+    printerPanelBitDepth?: number | null;
     activeTabStyle?: React.CSSProperties;
     outputFormat: string;
     settingsMode?: string;
@@ -2393,6 +2550,7 @@ export function ReplacementMaterialEditorShell({
     draft,
     onDraftChange,
     printerDitherBitDepth = null,
+    printerPanelBitDepth = null,
     outputFormat,
     activeTabStyle,
     settingsMode,
@@ -2405,7 +2563,18 @@ export function ReplacementMaterialEditorShell({
 
     const renderTabBody = React.useCallback((tabId: string) => {
         if (tabId === 'meta') {
-            return <MaterialProfileIdentitySection draft={draft} onChange={onDraftChange} />;
+            return (
+                <>
+                    <MaterialProfileIdentitySection draft={draft} onChange={onDraftChange} />
+                    <PluginLocalMaterialSettingsMetaTab
+                        outputFormat={outputFormat}
+                        settingsMode={settingsMode}
+                        adapter={adapter}
+                        localSettingsByOutput={localSettingsByOutput}
+                        onChange={onLocalSettingsByOutputChange}
+                    />
+                </>
+            );
         }
 
         if (tabId === 'anti-aliasing') {
@@ -2414,6 +2583,7 @@ export function ReplacementMaterialEditorShell({
                     draft={draft}
                     onChange={onDraftChange}
                     printerDitherBitDepth={printerDitherBitDepth}
+                    printerPanelBitDepth={printerPanelBitDepth}
                 />
             );
         }
@@ -2430,7 +2600,7 @@ export function ReplacementMaterialEditorShell({
                 showTabBar={false}
             />
         );
-    }, [adapter, draft, localSettingsByOutput, onDraftChange, onLocalSettingsByOutputChange, outputFormat, printerDitherBitDepth, settingsMode]);
+    }, [adapter, draft, localSettingsByOutput, onDraftChange, onLocalSettingsByOutputChange, outputFormat, printerDitherBitDepth, printerPanelBitDepth, settingsMode]);
 
     React.useLayoutEffect(() => {
         const root = measureRootRef.current;
@@ -2466,7 +2636,7 @@ export function ReplacementMaterialEditorShell({
             </div>
 
             <div className="relative" style={minBodyHeight ? { minHeight: `${minBodyHeight}px` } : undefined}>
-                <div className="space-y-3" data-measure-tab-body>
+                <div className="space-y-2.5" data-measure-tab-body>
                     {renderTabBody(activeTabId)}
                 </div>
 

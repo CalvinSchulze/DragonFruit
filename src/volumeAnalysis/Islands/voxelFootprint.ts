@@ -9,7 +9,7 @@
  * content process.
  *
  * Two floats in a shared buffer cost eight bytes and nothing for the collector
- * to trace. Coordinates are millimetres in world space, well inside the range
+ * to trace. Coordinates are millimeters in world space, well inside the range
  * where `Float32Array` keeps sub-micron precision.
  */
 export interface VoxelFootprint {
@@ -32,6 +32,18 @@ export function footprintY(footprint: VoxelFootprint, index: number): number {
 /** Surface Z for a voxel, or null when this footprint carries no Z data. */
 export function footprintZ(footprint: VoxelFootprint, index: number): number | null {
     return footprint.z ? footprint.z[index] : null;
+}
+
+/**
+ * Unique integer key for an integer cell of a 2D grid — the footprint's own
+ * 0.25 mm cells (`Math.round(mm * 4)`) and any coarser bucketing alike.
+ *
+ * Numeric because these keys are the hot path of mask probes (erosion,
+ * boundary extraction, tip bucketing): the string form allocated a template
+ * literal per lookup, which on a large region is millions of them.
+ */
+export function cellKey(cx: number, cy: number): number {
+    return (cx + 32768) * 65536 + (cy + 32768);
 }
 
 export function isEmptyFootprint(footprint: VoxelFootprint | undefined): boolean {

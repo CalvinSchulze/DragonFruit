@@ -1,8 +1,6 @@
-'use client';
-
 import React from 'react';
 import { useEscapeToClose } from '@/hotkeys/useEscapeToClose';
-import { AlertTriangle, X } from 'lucide-react';
+import { AlertTriangle, Trash2, X } from 'lucide-react';
 
 type DestructiveTransformModalProps = {
   isOpen: boolean;
@@ -105,16 +103,22 @@ export function DestructiveTransformModal({
           <div className="grid grid-cols-2 gap-2 pt-1">
             <button
               type="button"
-              className="ui-button ui-button-secondary !h-9 w-full px-3 text-xs"
+              className="ui-button ui-button-secondary !h-9 px-3 text-xs"
               onClick={onCancel}
             >
               Cancel
             </button>
             <button
               type="button"
-              className="ui-button ui-button-accent !h-9 w-full px-3 text-xs"
+              className="ui-button !h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5"
+              style={{
+                borderColor: 'color-mix(in srgb, #ef4444, var(--border-subtle) 45%)',
+                background: 'color-mix(in srgb, #ef4444, var(--surface-1) 86%)',
+                color: 'var(--danger)',
+              }}
               onClick={onConfirm}
             >
+              <Trash2 className="w-3.5 h-3.5" />
               Delete & Continue
             </button>
           </div>

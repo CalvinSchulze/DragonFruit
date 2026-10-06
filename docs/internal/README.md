@@ -13,6 +13,11 @@ git and still reviewed in PRs — "internal" means unpublished, not unowned.
 - **Point-in-time research** — surveys and reports written to inform a decision,
   kept because the analysis was expensive. `release-strategies-report.md` is one:
   it fed the release model, but `dev/releases.md` is the contract that resulted.
+- **Plans and checklists** — work that has not landed, or the record of how it
+  was planned: `cli/` (coverage gaps, new formats, what the CLI will not do),
+  `slicing-engine-v3.2-roadmap.md`, `flathub-submission.md`, and
+  `support-golden-masters.md` for the local-only refactor harness. They cite code
+  as it was when written, so names in them may since have moved.
 
 ## What does not belong here
 

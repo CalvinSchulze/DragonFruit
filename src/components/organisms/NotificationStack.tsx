@@ -1,8 +1,26 @@
 import { useLingui } from '@lingui/react';
 import { msg } from '@lingui/core/macro';
-import { AlertTriangle, CheckCircle2, RefreshCw, Redo2, Undo2 } from 'lucide-react';
+import type { MessageDescriptor } from '@lingui/core';
+import { AlertTriangle, CheckCircle2, Info, RefreshCw, Redo2, Undo2 } from 'lucide-react';
 import { Toast, ToastViewport } from '@/components/atoms';
 import type { SceneImportReport } from '@/features/scene/useSceneCollectionManager';
+import type { OrientationToastReport } from '@/features/notifications/useEditorToasts';
+
+/** Module-level labels (React Compiler must not rename Lingui locals). */
+const ALREADY_OPTIMAL = msg`Already optimal for this goal.`;
+
+// Static ICU pattern in a module-level formatter (see page.tsx): inline
+// interpolation loses its placeholder names to the React Compiler in production
+// builds. Concatenating a prefix instead would hard-code English word order.
+function formatOrientedLabel(
+  translate: (descriptor: MessageDescriptor, values?: Record<string, unknown>) => string,
+  modelName: string,
+): string {
+  return translate(msg({
+    message: 'Successfully oriented {modelName}',
+    comment: '{modelName} is the display name of the model that was reoriented.',
+  }), { modelName });
+}
 
 type IdText = { id: number; text: string };
 
@@ -26,6 +44,9 @@ export type NotificationStackProps = {
 
   exportErrorToast: IdText | null;
   isExportErrorToastVisible: boolean;
+
+  orientationToast: OrientationToastReport | null;
+  isOrientationToastVisible: boolean;
 };
 
 /** Bottom-corner toast/notification stack for the editor shell. */
@@ -44,6 +65,8 @@ export function NotificationStack({
   isExportSuccessToastVisible,
   exportErrorToast,
   isExportErrorToastVisible,
+  orientationToast,
+  isOrientationToastVisible,
 }: NotificationStackProps) {
   const { _ } = useLingui();
   return (
@@ -78,7 +101,7 @@ export function NotificationStack({
       {printingMonitorErrorToast && (
         <ToastViewport
           zIndex={126}
-          offset={(historyActionToast || sceneImportReport) ? '4.5rem' : '1.25rem'}
+          offset={(historyActionToast || sceneImportReport || orientationToast) ? '4.5rem' : '1.25rem'}
         >
           <Toast
             tone="error"
@@ -152,6 +175,28 @@ export function NotificationStack({
           <Toast tone="error" animated visible={isExportErrorToastVisible} className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 motion-safe:animate-pulse" />
             {exportErrorToast.text}
+          </Toast>
+        </ToastViewport>
+      )}
+      {orientationToast && (
+        <ToastViewport
+          zIndex={125}
+          offset={(historyActionToast || sceneImportReport) ? '4.5rem' : '1.25rem'}
+        >
+          <Toast
+            tone={orientationToast.status === 'applied' ? 'success' : 'info'}
+            animated
+            visible={isOrientationToastVisible}
+            className="flex items-center gap-2"
+          >
+            {orientationToast.status === 'applied' ? (
+              <CheckCircle2 className="h-4 w-4" />
+            ) : (
+              <Info className="h-4 w-4" />
+            )}
+            {orientationToast.status === 'applied'
+              ? formatOrientedLabel(_, orientationToast.modelName)
+              : _(ALREADY_OPTIMAL)}
           </Toast>
         </ToastViewport>
       )}

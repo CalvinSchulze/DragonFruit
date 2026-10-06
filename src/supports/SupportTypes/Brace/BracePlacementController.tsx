@@ -3,13 +3,13 @@ import { useFrame } from '@react-three/fiber';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useHotkeyConfig } from '@/hotkeys/HotkeyContext';
-import { subscribe, getSnapshot, addKnot, addBrace } from '../../state';
+import { addSupportEntity, subscribe, getSnapshot, addKnot } from '../../state';
 import { pushSupportHistory } from '@/supports/history/supportHistory';
 import type { SnapTarget } from '../../interaction/SnappingManager';
-import type { Brace, Knot, Vec3 } from '../../types';
-import { SUPPORT_ADD_BRACE } from '../../history/actionTypes';
+import type { Brace, Knot, Segment, Vec3 } from '../../types';
+import { braceSnapConeType, knotHostId, parseSegmentSelectionId, SUPPORT_TYPES, type SupportTypeId } from '../../supportTypeRegistry';
+import { addAction } from '../../history/actionTypes';
 import { getSettings, getAutoBracingSettings } from '../../Settings/state';
-import { useKickstandStoreState } from '../Kickstand/kickstandStore';
 import { bracePlacementStore, useBracePlacementState } from './bracePlacementState';
 import { branchPlacementStore } from '../Branch/branchPlacementState';
 import { v4 as uuidv4 } from 'uuid';
@@ -21,7 +21,7 @@ import {
     buildLeafConeSnapMeta,
     buildPrimarySnapTargetIndex,
     buildSnapTargetCandidateIndex,
-    buildSupportPathSnapTargets,
+    ALL_SNAP_TYPES, buildSupportPathSnapTargets,
     resolveBracePathDiameterAtT,
 } from '../../interaction/shared/placement/snapping/supportPathTargets';
 import { getSupportPlacementModifierState, isSupportPlacementBindingSatisfiedByModifierState } from '../../interaction/shared/placement/hotkeys/supportPlacementHotkeyResolver';
@@ -30,6 +30,7 @@ import { isSupportEditInteractionActive } from '../../interaction/gizmoInteracti
 import { previewVecKey, quantizePreviewValue } from '../shared/previewSignature';
 import type { BracePreviewData } from './bracePlacementState';
 import { resolveTwigDiameterAtSegmentT, twigJointDiameterForLocalDiameter } from '../Twig/twigTaper';
+import { setPickRayFromCamera } from '@/components/scene/camera/pickRay';
 
 interface ShaftHoverDetail {
     segmentId?: string | null;
@@ -63,7 +64,6 @@ interface LeafHoverDetail {
 export function BracePlacementController() {
     const { altActive, stage, start } = useBracePlacementState();
     const supportState = useSyncExternalStore(subscribe, getSnapshot);
-    const kickstandState = useKickstandStoreState();
     const { getHotkey } = useHotkeyConfig();
     const branchFamilyBinding = getHotkey('SUPPORTS', 'BRANCH_PLACEMENT');
 
@@ -74,99 +74,70 @@ export function BracePlacementController() {
     const lastPreviewSignatureRef = useRef<string | null>(null);
 
     const segmentMeta = useMemo(() => {
+        // Every type's shaft, by what the registry declares: a shafted type
+        // contributes each segment, a prefixed one its own id under that
+        // prefix.
         const map = new Map<string, { modelId: string; supportKey: string; isBezier: boolean }>();
-        for (const trunk of Object.values(supportState.trunks)) {
-            for (const seg of trunk.segments) {
-                map.set(seg.id, {
-                    modelId: trunk.modelId,
-                    supportKey: `trunk:${trunk.id}`,
-                    isBezier: seg.type === 'bezier',
-                });
+
+        for (const descriptor of SUPPORT_TYPES) {
+            const collection = supportState[descriptor.location.key] as unknown as Record<string, {
+                id: string; modelId: string; segments?: Segment[]; curve?: { type?: string };
+            }>;
+
+            for (const entity of Object.values(collection ?? {})) {
+                const supportKey = `${descriptor.id}:${entity.id}`;
+
+                if (descriptor.segmentSelectionPrefix) {
+                    map.set(`${descriptor.segmentSelectionPrefix}${entity.id}`, {
+                        modelId: entity.modelId,
+                        supportKey,
+                        isBezier: entity.curve?.type === 'bezier',
+                    });
+                    continue;
+                }
+
+                for (const seg of entity.segments ?? []) {
+                    map.set(seg.id, {
+                        modelId: entity.modelId,
+                        supportKey,
+                        isBezier: seg.type === 'bezier',
+                    });
+                }
             }
-        }
-        for (const branch of Object.values(supportState.branches)) {
-            for (const seg of branch.segments) {
-                map.set(seg.id, {
-                    modelId: branch.modelId,
-                    supportKey: `branch:${branch.id}`,
-                    isBezier: seg.type === 'bezier',
-                });
-            }
-        }
-
-        for (const kickstand of Object.values(kickstandState.kickstands)) {
-            for (const seg of kickstand.segments) {
-                map.set(seg.id, {
-                    modelId: kickstand.modelId,
-                    supportKey: `kickstand:${kickstand.id}`,
-                    isBezier: seg.type === 'bezier',
-                });
-            }
-        }
-
-         for (const twig of Object.values(supportState.twigs)) {
-             for (const seg of twig.segments) {
-                 map.set(seg.id, {
-                     modelId: twig.modelId,
-                     supportKey: `twig:${twig.id}`,
-                     isBezier: seg.type === 'bezier',
-                 });
-             }
-         }
-
-         for (const stick of Object.values(supportState.sticks)) {
-             for (const seg of stick.segments) {
-                 map.set(seg.id, {
-                     modelId: stick.modelId,
-                     supportKey: `stick:${stick.id}`,
-                     isBezier: seg.type === 'bezier',
-                 });
-             }
-         }
-
-        for (const brace of Object.values(supportState.braces)) {
-            map.set(`braceSegment:${brace.id}`, {
-                modelId: brace.modelId,
-                supportKey: `brace:${brace.id}`,
-                isBezier: brace.curve?.type === 'bezier',
-            });
         }
         return map;
-    }, [supportState.trunks, supportState.branches, supportState.twigs, supportState.sticks, supportState.braces, kickstandState.kickstands]);
+    }, [supportState]);
 
     const leafMeta = useMemo(() => {
         return buildLeafConeSnapMeta(supportState.leaves);
     }, [supportState.leaves]);
 
     const segmentPlacementSurfaceById = useMemo(() => {
+        // Which surface a shaft's contact sits on, for every type that has
+        // contacts, taking the first that declares one.
         const map = new Map<string, 'interior' | 'exterior' | undefined>();
-        for (const trunk of Object.values(supportState.trunks)) {
-            for (const seg of trunk.segments) {
-                map.set(seg.id, trunk.contactCone?.placementSurface);
+
+        for (const descriptor of SUPPORT_TYPES) {
+            const collection = supportState[descriptor.location.key] as unknown as Record<string, {
+                id: string; segments?: Segment[]; placementSurface?: 'interior' | 'exterior';
+            }>;
+
+            for (const entity of Object.values(collection ?? {})) {
+                const fields = entity as unknown as Record<string, { placementSurface?: 'interior' | 'exterior' } | undefined>;
+                const fromContact = descriptor.contactFields
+                    .map((field) => fields[field]?.placementSurface)
+                    .find((surface) => surface !== undefined);
+
+                if (descriptor.segmentSelectionPrefix) {
+                    map.set(`${descriptor.segmentSelectionPrefix}${entity.id}`, entity.placementSurface);
+                    continue;
+                }
+
+                for (const seg of entity.segments ?? []) map.set(seg.id, fromContact);
             }
-        }
-        for (const branch of Object.values(supportState.branches)) {
-            for (const seg of branch.segments) {
-                map.set(seg.id, branch.contactCone?.placementSurface);
-            }
-        }
-        for (const twig of Object.values(supportState.twigs)) {
-            const placementSurface = twig.contactDiskA?.placementSurface ?? twig.contactDiskB?.placementSurface;
-            for (const seg of twig.segments) {
-                map.set(seg.id, placementSurface);
-            }
-        }
-        for (const stick of Object.values(supportState.sticks)) {
-            const placementSurface = stick.contactConeA?.placementSurface ?? stick.contactConeB?.placementSurface;
-            for (const seg of stick.segments) {
-                map.set(seg.id, placementSurface);
-            }
-        }
-        for (const brace of Object.values(supportState.braces)) {
-            map.set(`braceSegment:${brace.id}`, brace.placementSurface);
         }
         return map;
-    }, [supportState.trunks, supportState.branches, supportState.twigs, supportState.sticks, supportState.braces]);
+    }, [supportState]);
 
     const leafPlacementSurfaceById = useMemo(() => {
         const map = new Map<string, 'interior' | 'exterior' | undefined>();
@@ -190,7 +161,7 @@ export function BracePlacementController() {
         if (start.kind === 'shaft') {
             return start.segmentId ? segmentPlacementSurfaceById.get(start.segmentId) : undefined;
         }
-        return start.leafId ? leafPlacementSurfaceById.get(start.leafId) : undefined;
+        return start.entityId ? leafPlacementSurfaceById.get(start.entityId) : undefined;
     }, [start, segmentPlacementSurfaceById, leafPlacementSurfaceById]);
 
     // Reverse lookup: twig segment id → owning twig. Lets the placement
@@ -271,16 +242,12 @@ export function BracePlacementController() {
         }
 
         const targets: SnapTarget[] = buildSupportPathSnapTargets(supportState, {
-            includeTrunks: true,
-            includeBranches: true,
-            includeBraces: true,
-            includeTwigs: true,
-            includeSticks: true,
+            snapTypes: ALL_SNAP_TYPES,
             placementSurface: activePlacementSurface,
             excludeSegmentIds: excludedSegmentIds,
         });
 
-        targets.push(...buildKickstandPathSnapTargets(kickstandState, { excludeSegmentIds: excludedSegmentIds }));
+        targets.push(...buildKickstandPathSnapTargets(supportState, { excludeSegmentIds: excludedSegmentIds }));
         targets.push(...buildLeafConePathSnapTargets(leafMeta, { placementSurface: activePlacementSurface }));
 
         return targets;
@@ -289,12 +256,7 @@ export function BracePlacementController() {
         stage,
         start,
         activePlacementSurface,
-        supportState.trunks,
-        supportState.branches,
-        supportState.braces,
-        supportState.twigs,
-        supportState.sticks,
-        kickstandState.kickstands,
+        supportState,
         leafMeta,
     ]);
 
@@ -425,8 +387,8 @@ export function BracePlacementController() {
             if (!resolved) return null;
 
             return {
-                kind: 'leaf' as const,
-                leafId,
+                kind: braceSnapConeType()!,
+                entityId: leafId,
                 coneT,
                 snappedPos: resolved.pos,
                 hostDiameterMm: resolved.diameterMm,
@@ -524,7 +486,7 @@ export function BracePlacementController() {
                 };
                 const signature = [
                     'brace:hovered-leaf-snap',
-                    hoveredLeafSnap.leafId ?? 'none',
+                    hoveredLeafSnap.entityId ?? 'none',
                     previewVecKey(hoveredLeafSnap.snappedPos),
                     quantizePreviewValue(hostDia),
                 ].join('|');
@@ -559,9 +521,9 @@ export function BracePlacementController() {
                 } else {
                     const target = resolveNearestPathTarget(resolvedSnap.targetId, resolvedSnap.snappedPos) ?? getTarget(resolvedSnap.targetId);
                     let hostDia = target?.pathSegment?.radius !== undefined ? target.pathSegment.radius * 2 : fallbackDia;
-                    if (resolvedSnap.targetId.startsWith('braceSegment:')) {
-                        const braceId = resolvedSnap.targetId.slice('braceSegment:'.length);
-                        const brace = supportState.braces[braceId];
+                    const spanTarget = parseSegmentSelectionId(resolvedSnap.targetId);
+                    if (spanTarget) {
+                        const brace = supportState.braces[spanTarget.entityId];
                         if (brace) {
                             const resolvedDiameter = resolveBracePathDiameterAtT(brace, supportState.knots, resolvedSnap.t);
                             if (resolvedDiameter !== null) {
@@ -601,7 +563,7 @@ export function BracePlacementController() {
         }
 
         // Free-space end: follow the mouse at approximately the same depth as the start.
-        raycaster.setFromCamera(pointer, camera);
+        setPickRayFromCamera(raycaster, pointer, camera);
         const ray = raycaster.ray;
         const startVec = new THREE.Vector3(start.snappedPos.x, start.snappedPos.y, start.snappedPos.z);
         const depth = ray.direction.dot(startVec.clone().sub(ray.origin));
@@ -630,7 +592,7 @@ export function BracePlacementController() {
                 ownerModelId: hoveredSnap.ownerModelId,
             };
 
-            if (start.kind === 'leaf') {
+            if (start.kind === braceSnapConeType()) {
                 if (start.ownerModelId && snapTarget.ownerModelId && start.ownerModelId !== snapTarget.ownerModelId) {
                     bracePlacementStore.setSnapTarget(null);
                 } else {
@@ -651,15 +613,15 @@ export function BracePlacementController() {
             // Leaf hover fast-path end target (counterpart to the shaft branch
             // above). resolveLeafSnapFromClick already clamps coneT off the tip.
             const leafSnap = hoveredLeafSnapEnd;
-            const sameLeaf = start.kind === 'leaf' && start.leafId === leafSnap.leafId;
+            const sameLeaf = start.kind === braceSnapConeType() && start.entityId === leafSnap.entityId;
             const crossModel = !!(start.ownerModelId && leafSnap.ownerModelId && start.ownerModelId !== leafSnap.ownerModelId);
 
             if (sameLeaf || crossModel) {
                 bracePlacementStore.setSnapTarget(null);
             } else {
                 const snapTarget = {
-                    kind: 'leaf' as const,
-                    leafId: leafSnap.leafId,
+                    kind: braceSnapConeType()!,
+                    entityId: leafSnap.entityId,
                     coneT: leafSnap.coneT,
                     snappedPos: leafSnap.snappedPos,
                     hostDiameterMm: leafSnap.hostDiameterMm,
@@ -681,12 +643,12 @@ export function BracePlacementController() {
                     const minT = meta ? THREE.MathUtils.clamp(minMm / Math.max(0.0001, meta.lengthMm), 0, 0.99) : 0;
                     const coneT = Math.max(resolvedSnap.t, minT);
 
-                    const sameLeaf = start.kind === 'leaf' && start.leafId === resolvedSnap.targetId;
+                    const sameLeaf = start.kind === braceSnapConeType() && start.entityId === resolvedSnap.targetId;
 
                     if (resolved && !sameLeaf) {
                         const snapTarget = {
-                            kind: 'leaf' as const,
-                            leafId: resolvedSnap.targetId,
+                            kind: braceSnapConeType()!,
+                            entityId: resolvedSnap.targetId,
                             coneT,
                             snappedPos: resolved.pos,
                             hostDiameterMm: resolved.diameterMm,
@@ -704,9 +666,9 @@ export function BracePlacementController() {
                 let hostDiameterMm = target?.pathSegment?.radius !== undefined ? target.pathSegment.radius * 2 : undefined;
                 let ownerModelId = segmentMeta.get(resolvedSnap.targetId)?.modelId;
 
-                if (resolvedSnap.targetId.startsWith('braceSegment:')) {
-                    const braceId = resolvedSnap.targetId.slice('braceSegment:'.length);
-                    const brace = supportState.braces[braceId];
+                const spanTarget = parseSegmentSelectionId(resolvedSnap.targetId);
+                if (spanTarget) {
+                    const brace = supportState.braces[spanTarget.entityId];
                     if (brace) {
                         const resolvedDiameter = resolveBracePathDiameterAtT(brace, supportState.knots, resolvedSnap.t);
                         if (resolvedDiameter !== null) {
@@ -727,7 +689,7 @@ export function BracePlacementController() {
                     ownerModelId,
                 };
 
-                if (start.kind === 'leaf') {
+                if (start.kind === braceSnapConeType()) {
                     if (start.ownerModelId && ownerModelId && start.ownerModelId !== ownerModelId) {
                         bracePlacementStore.setSnapTarget(null);
                     } else {
@@ -756,7 +718,7 @@ export function BracePlacementController() {
         const previewSignature = [
             'brace:active',
             start.kind,
-            start.segmentId ?? start.leafId ?? 'none',
+            start.segmentId ?? start.entityId ?? 'none',
             previewVecKey(start.snappedPos),
             previewVecKey(endPos),
             quantizePreviewValue(startDiam),
@@ -876,12 +838,12 @@ export function BracePlacementController() {
             if (stage !== 'awaitingEnd') return;
             if (!start) return;
 
-            if (start.kind === 'leaf') {
+            if (start.kind === braceSnapConeType()) {
                 const endSnap = resolveSnapFromClick(segmentId, point);
                 if (!endSnap || endSnap.t === undefined || !endSnap.segmentId) return;
 
                 if (start.ownerModelId && endSnap.ownerModelId && start.ownerModelId !== endSnap.ownerModelId) return;
-                if (!start.leafId || start.coneT === undefined) return;
+                if (!start.entityId || start.coneT === undefined) return;
 
                 const settings = getSettings();
                 const braceDia = getAutoBracingSettings().braceDiameterMm;
@@ -895,7 +857,7 @@ export function BracePlacementController() {
 
                 const startKnot: Knot = {
                     id: startKnotId,
-                    parentShaftId: `leafCone:${start.leafId}`,
+                    parentShaftId: knotHostId(start.kind as SupportTypeId, start.entityId!),
                     t: start.coneT,
                     pos: start.snappedPos,
                     diameter: startDiam + 0.1,
@@ -911,12 +873,13 @@ export function BracePlacementController() {
 
                 const modelId = start.ownerModelId ?? endSnap.ownerModelId ?? 'unknown';
                 const placementSurface = resolveBracePlacementSurface(
-                    leafPlacementSurfaceById.get(start.leafId),
+                    leafPlacementSurfaceById.get(start.entityId),
                     endSnap.segmentId ? segmentPlacementSurfaceById.get(endSnap.segmentId) : undefined,
                 );
 
                 const brace: Brace = {
                     id: braceId,
+                    typeId: 'brace',
                     modelId,
                     startKnotId,
                     endKnotId,
@@ -928,10 +891,10 @@ export function BracePlacementController() {
 
                 addKnot(startKnot);
                 addKnot(endKnot);
-                addBrace(brace);
+                addSupportEntity(brace);
 
                 pushSupportHistory({
-                    type: SUPPORT_ADD_BRACE,
+                    type: addAction('brace'),
                     payload: {
                         brace,
                         startKnot,
@@ -991,6 +954,7 @@ export function BracePlacementController() {
 
             const brace: Brace = {
                 id: braceId,
+                typeId: 'brace',
                 modelId,
                 startKnotId,
                 endKnotId,
@@ -1002,10 +966,10 @@ export function BracePlacementController() {
 
             addKnot(startKnot);
             addKnot(endKnot);
-            addBrace(brace);
+            addSupportEntity(brace);
 
             pushSupportHistory({
-                type: SUPPORT_ADD_BRACE,
+                type: addAction('brace'),
                 payload: {
                     brace,
                     startKnot,
@@ -1037,6 +1001,11 @@ export function BracePlacementController() {
             const point: Vec3 | null = detail?.point ?? null;
             if (!leafId || !point) return;
 
+            // The cone host this brace end rides, from the type declaring it.
+            const coneType = braceSnapConeType();
+            if (!coneType) return;
+            const coneHostId = knotHostId(coneType, leafId);
+
             if (stage === 'idle') {
                 const snap = resolveLeafSnapFromClick(leafId, point);
                 if (!snap) return;
@@ -1055,8 +1024,8 @@ export function BracePlacementController() {
             }
 
             if (stage !== 'awaitingEnd' || !start) return;
-            if (start.kind === 'leaf') {
-                if (start.leafId === leafId) return;
+            if (start.kind === braceSnapConeType()) {
+                if (start.entityId === leafId) return;
 
                 const endSnap = resolveLeafSnapFromClick(leafId, point);
                 if (!endSnap || endSnap.coneT === undefined) return;
@@ -1064,7 +1033,7 @@ export function BracePlacementController() {
                 const startModelId = start.ownerModelId;
                 const endModelId = endSnap.ownerModelId;
                 if (startModelId && endModelId && startModelId !== endModelId) return;
-                if (!start.leafId || start.coneT === undefined) return;
+                if (!start.entityId || start.coneT === undefined) return;
 
                 const settings = getSettings();
                 const braceDia = getAutoBracingSettings().braceDiameterMm;
@@ -1078,7 +1047,7 @@ export function BracePlacementController() {
 
                 const startKnot: Knot = {
                     id: startKnotId,
-                    parentShaftId: `leafCone:${start.leafId}`,
+                    parentShaftId: knotHostId(start.kind as SupportTypeId, start.entityId!),
                     t: start.coneT,
                     pos: start.snappedPos,
                     diameter: startDiam + 0.1,
@@ -1086,7 +1055,7 @@ export function BracePlacementController() {
 
                 const endKnot: Knot = {
                     id: endKnotId,
-                    parentShaftId: `leafCone:${leafId}`,
+                    parentShaftId: coneHostId,
                     t: endSnap.coneT,
                     pos: endSnap.snappedPos,
                     diameter: endDiam + 0.1,
@@ -1094,11 +1063,12 @@ export function BracePlacementController() {
 
                 const modelId = startModelId ?? endModelId ?? 'unknown';
                 const placementSurface = resolveBracePlacementSurface(
-                    leafPlacementSurfaceById.get(start.leafId),
+                    leafPlacementSurfaceById.get(start.entityId),
                     leafPlacementSurfaceById.get(leafId),
                 );
                 const brace: Brace = {
                     id: braceId,
+                    typeId: 'brace',
                     modelId,
                     startKnotId,
                     endKnotId,
@@ -1110,10 +1080,10 @@ export function BracePlacementController() {
 
                 addKnot(startKnot);
                 addKnot(endKnot);
-                addBrace(brace);
+                addSupportEntity(brace);
 
                 pushSupportHistory({
-                    type: SUPPORT_ADD_BRACE,
+                    type: addAction('brace'),
                     payload: {
                         brace,
                         startKnot,
@@ -1154,7 +1124,7 @@ export function BracePlacementController() {
 
             const endKnot: Knot = {
                 id: endKnotId,
-                parentShaftId: `leafCone:${leafId}`,
+                parentShaftId: coneHostId,
                 t: endSnap.coneT,
                 pos: endSnap.snappedPos,
                 diameter: endDiam + 0.1,
@@ -1167,6 +1137,7 @@ export function BracePlacementController() {
             );
             const brace: Brace = {
                 id: braceId,
+                typeId: 'brace',
                 modelId,
                 startKnotId,
                 endKnotId,
@@ -1178,10 +1149,10 @@ export function BracePlacementController() {
 
             addKnot(startKnot);
             addKnot(endKnot);
-            addBrace(brace);
+            addSupportEntity(brace);
 
             pushSupportHistory({
-                type: SUPPORT_ADD_BRACE,
+                type: addAction('brace'),
                 payload: {
                     brace,
                     startKnot,

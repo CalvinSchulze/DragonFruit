@@ -22,7 +22,7 @@ import path from 'node:path';
 
 const projectRoot = process.cwd();
 
-const DEFAULT_DOC_FILES = ['AGENTS.md', 'CONTEXT.md', 'README.md', 'LOCALE.md'];
+const DEFAULT_DOC_FILES = ['AGENTS.md', 'CONTEXT.md', 'README.md'];
 const DEFAULT_DOC_DIRS = ['docs'];
 
 const CODE_ROOTS = ['src', 'src-tauri', 'rust', 'plugins', 'scripts', 'profiles', '.github'];
@@ -31,7 +31,7 @@ const CODE_FILES = [
       'package.json', 'next.config.ts', 'tsconfig.json', 'eslint.config.mjs',
       'lingui.config.ts', 'mkdocs.yml', 'crowdin.yml', 'rust-toolchain.toml',
 ];
-const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.mjs', '.js', '.json', '.toml', '.yml', '.yaml', '.css']);
+const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.rs', '.mjs', '.js', '.json', '.toml', '.yml', '.yaml', '.css', '.sh']);
 
 // A repo-relative path: starts at a known root, has a file extension or a trailing slash.
 const REPO_PATH_RE = new RegExp(`^(?:${CODE_ROOTS.join('|')})/[A-Za-z0-9_./-]+$`);

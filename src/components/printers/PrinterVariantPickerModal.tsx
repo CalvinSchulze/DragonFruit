@@ -367,7 +367,7 @@ export function PrinterVariantPickerModal({
     } finally {
       setBusy(false);
     }
-  }, [networkAdapter, preset.networkFilter, preset.modelVariantDetectPath, preset.name, preset.networkSupport, variants, _]);
+  }, [networkAdapter, preset, variants, _]);
 
   const handleManualIpConnect = React.useCallback(() => {
     const host = manualIp.trim();

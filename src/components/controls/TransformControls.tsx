@@ -216,7 +216,6 @@ export function TransformControls({
             </h3>
           </>
         )}
-        hideDivider={!expanded}
       />
 
       {expanded ? (

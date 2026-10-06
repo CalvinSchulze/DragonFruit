@@ -17,12 +17,14 @@ import {
   type CrossSectionStencilCapEntry,
 } from '@/components/scene/CrossSectionStencilCap';
 import { IslandOverlay } from '@/components/scene/IslandOverlay';
-import IslandSurfaceDotsOverlay from '@/components/scene/IslandSurfaceDotsOverlay';
+import IslandInstancesOverlay from '@/components/scene/IslandInstancesOverlay';
+import type { IslandInstances } from '@/volumeAnalysis/Islands/islandInstances';
 import { IslandOverhangOverlay } from '@/components/scene/IslandOverhangOverlay';
+import { SupportBlockerOverlay } from '@/features/support-blockers/SupportBlockerOverlay';
+import { useSupportBlockerSceneBindings } from '@/features/support-blockers/useSupportBlockerSceneBindings';
+import { subscribeSupportBlockers, isSupportBlockerStrokeActive } from '@/supports/autoSupport/supportBlockers';
 import type { DetectedIsland } from '@/volumeAnalysis/Islands/types';
 import { IslandVoxelVisualization } from '@/components/scene/IslandVoxelVisualization';
-import { IslandExpansionVisualization } from '@/components/scene/IslandExpansionVisualization';
-import { MeshClassificationRenderer } from '@/components/scene/MeshClassificationRenderer';
 import { IslandIdLabels } from '@/components/scene/IslandIdLabels';
 import { ScreenSpaceGizmo as UnifiedGizmo } from '@/components/gizmo';
 import { warmTransformGizmoGeometryCache } from '@/components/gizmo/gizmoGeometryCache';
@@ -31,17 +33,18 @@ import { PickingDebugOverlay } from '@/components/picking';
 import { SelectionProvider, SelectionManager, SelectionSpotlight } from '@/components/selection';
 import type { SelectionHighlightMode } from '@/components/selection';
 import type { IslandMarker } from '@/volumeAnalysis/IslandScan/islandOverlayLogic';
-import type { ScanResults } from '@/volumeAnalysis/islandVolume/steps/voxelization/ScanOrchestrator';
-import type { BasinFillSimulator } from '@/volumeAnalysis/islandVolume/steps/expansion/BasinFillSimulator';
-import type { BasinFillProxy } from '@/volumeAnalysis/islandVolume/steps/expansion/BasinFillProxy';
+import type { ScanResults } from '@/volumeAnalysis/IslandScan/ScanOrchestrator';
 import type { TransformMode, ModelTransform } from '@/hooks/useModelTransform';
-import type { Segment, SupportMode } from '@/supports/types';
-import type { ContactCone } from '@/supports/SupportPrimitives/ContactCone/types';
+import type { LimitationCode, SupportMode, WarningCode } from '@/supports/types';
+import { contactEndpointsFor, getSupportTypeDescriptor, hostKnotFieldsFor, INLINE_ROOT_TYPES, previewTypesByPriority, SUPPORT_COLLECTION_KEYS, SUPPORT_TYPES, type SupportTypeId } from '@/supports/supportTypeRegistry';
+import { EMPTY_PLACEMENT_ACTIVE, EMPTY_PLACEMENT_PREVIEWS, type SupportPlacementActive, type SupportPlacementPreviews } from '@/supports/rendering';
+import { collectRaftBaseCirclesByModel, raftFootprintSourceRefs, RAFT_UNASSIGNED_MODEL_KEY } from '@/supports/Rafts/Crenelated/raftFootprintCircles';
+import { collectSupportMarqueeShapes } from './supportMarqueeShapes';
 import type { SupportData } from '@/supports/rendering';
 import { subscribe as subscribeSupportState, getSnapshot as getSupportSnapshot } from '@/supports/state';
 import { getModelIdForSupportEntityId } from '@/supports/state';
-import { subscribeToKickstandStore, getKickstandSnapshot } from '@/supports/SupportTypes/Kickstand/kickstandStore';
 import FootprintBorderRenderer from '@/supports/Rafts/Crenelated/rendering/FootprintBorderRenderer';
+import type { PlateFootprintSource } from '@/supports/Rafts/Crenelated/geometry/modelPlateFootprint';
 import SliceSatBoundingMeshRenderer from '@/supports/Rafts/Crenelated/rendering/SliceSatBoundingMeshRenderer';
 import { getRaftSettings, subscribeToRaftStore } from '@/supports/Rafts/Crenelated/RaftState';
 import { computeFootprint } from '@/supports/Rafts/Crenelated/geometry/computeFootprint';
@@ -50,21 +53,24 @@ import type { SupportBaseCircle } from '@/supports/Rafts/Crenelated/RaftTypes';
 import { JointPlacementPreview } from '@/supports/SupportPrimitives/Joint/JointPlacementPreview';
 import { useJointCreationState } from '@/supports/SupportPrimitives/Joint/jointCreationState';
 import { getFinalSocketPosition } from '@/supports/SupportPrimitives/ContactCone/contactConeUtils';
-import { isContactDiskHudInteractionActive } from '@/supports/SupportPrimitives/ContactDisk/contactDiskHudInteraction';
-import { BranchPlacementController } from '@/supports/SupportTypes/Branch/BranchPlacementController';
-import { LeafPlacementController } from '@/supports/SupportTypes/Leaf/LeafPlacementController';
-import { BracePlacementController } from '@/supports/SupportTypes/Brace/BracePlacementController';
-import { KickstandPlacementController } from '@/supports/SupportTypes/Kickstand/KickstandPlacementController';
+import { isContactDiskHudDraggingActive, isContactDiskHudInteractionActive } from '@/supports/SupportPrimitives/ContactDisk/contactDiskHudInteraction';
+import { PLACEMENT_CONTROLLERS, PLACEMENT_CONTROLLER_TYPES } from '@/supports/placementControllers';
 import { clearSupportSelection } from '@/supports/interaction/shared/selection/selectionController';
 import { isSupportTargetHoverCategory } from '@/supports/interaction/shared/hover/supportHoverResolver';
 import { useSceneHoveredSupportId } from '@/supports/interaction/shared/hover/sceneHoverStore';
+import {
+  BRANCH_FAMILY_PLACEMENT_OWNER,
+  isPlacementActiveForType,
+  isPlacementPreviewForType,
+  LEAF_PLACEMENT_OWNER,
+} from '@/supports/interaction/shared/placement/hotkeys/supportPlacementRouting';
 import { SupportLimitationFeedback } from '@/supports/PlacementLogic/SupportLimitations';
 import {
   getSupportPlacementHelpEnabled,
   subscribeSupportPlacementHelp,
 } from '@/components/settings/supportPlacementPreferences';
 import { useCurveInteractionState } from '@/supports/Curves/curveInteractionState';
-import { getSettings, subscribeToSettings } from '@/supports/Settings';
+import { getSettings, subscribeToSettings } from '@/supports/Settings/state';
 import { DEFAULT_TIP_CONTACT_DIAMETER_MM } from '@/supports/Settings/defaults';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
 import {
@@ -101,8 +107,18 @@ import { ModelAttachedSupportLayer } from './ModelAttachedSupportLayer';
 import {
   CameraModeEntryFramingController,
   CameraProjectionController,
+  HorizonLock,
+  OrthoFrustumSync,
+  OrthoPickRayAlignment,
   OrbitPivotIndicator,
+  TrackpadGesturePoseApplier,
 } from './SceneCanvasCameraControllers';
+import {
+  ORTHO_MAX_RADIUS,
+  ORTHO_MIN_RADIUS,
+  dollyOrthoToCursor,
+  orthoWheelRadiusScale,
+} from '@/components/scene/camera/orthoDolly';
 import { useMarqueeSelectionHandlers } from './useMarqueeSelectionHandlers';
 import {
   marqueeModeForDrag,
@@ -111,7 +127,6 @@ import {
   ringHitsMarquee,
   shapeHitsMarquee,
   type MarqueePoint,
-  type MarqueeSegment,
   type ProjectedMesh,
 } from './marqueeHitTest';
 import { PickingEmptySpaceHoverResetter, SceneRenderBindings } from './SceneCanvasInteractionBits';
@@ -120,7 +135,9 @@ import { PickingProviderWrapper, SelectionSync, useInteractionWarning } from './
 import { CameraClipPlaneStabilizer, CameraProvider, EnableLocalClipping, Helpers, Lights, SceneMoodOverlay } from './SceneEnvironment';
 import { StlMesh } from './StlMesh';
 import { setClipBounds } from './clipBoundsStore';
+import { setSupportPlacementGuideZ, useSupportPlacementGuideActive } from './supportPlacementGuideStore';
 import { setModelMesh } from '@/supports/autoSupport/meshStore';
+import { setSupportNavigationActive } from '@/supports/interaction/navigationActiveStore';
 import { useIsLinux } from '@/hooks/usePlatform';
 import {
   DEFAULT_CAMERA_PROJECTION_SETTINGS,
@@ -179,6 +196,17 @@ import {
 import { applyScaleFactor } from '@/components/gizmo/scale/applyScaleFactor';
 import { createWheelDeviceClassifier, type WheelDevice } from '@/components/scene/SceneCanvas/wheelDeviceClassifier';
 import { getSelectionGizmoCenter } from '@/features/scene/selectionPosition';
+import { DEFAULT_LIFT_DISTANCE_MM } from '@/features/transform/liftDefaults';
+import { setPickRayFromCamera } from '@/components/scene/camera/pickRay';
+import {
+  TRACKPAD_POSE_RELEASE_MS,
+  applyTrackpadOrbitToPose,
+  applyTrackpadPanToPose,
+  createTrackpadGesturePose,
+  seedTrackpadGesturePose,
+  type TrackpadGestureAction,
+  type TrackpadGesturePose,
+} from '@/components/scene/camera/trackpadGesturePose';
 
 const Canvas = dynamic(() => import('@react-three/fiber').then(m => m.Canvas), { ssr: false });
 
@@ -187,8 +215,6 @@ type GhostPreviewTransform = {
   rotation: THREE.Euler;
   scale: THREE.Vector3;
 };
-
-type TrackpadGestureAction = 'pan' | 'orbit';
 
 // Interpolated and pluralized, so it follows the house rule: a static ICU
 // pattern in a module-level formatter with the value passed to `translate`.
@@ -428,7 +454,6 @@ export function SceneCanvas({
   shaderType,
   matcapVariant,
   flatUseVertexColors,
-  toonSteps,
   xrayOpacity,
   heatmapMinAngle,
   heatmapMaxAngle,
@@ -441,13 +466,17 @@ export function SceneCanvas({
   onCameraChange,
   onCameraEnd,
   islandMarkers,
+  islandInstances,
   overhangIslands,
+  toppleCoverage,
+  dragTotalMm3,
   overlayBrushRadius,
   overlayColor,
   overlayOpacity,
   overlaySelectedIslandId,
   showOverhangs = true,
   materialRoughness,
+  bakedAoIntensity,
   scanResults,
   layerHeightMm,
   scanBBox,
@@ -462,7 +491,7 @@ export function SceneCanvas({
   uniformScaling = true,
   localTransformSpace = false,
   autoLift = false,
-  liftDistance = 5,
+  liftDistance = DEFAULT_LIFT_DISTANCE_MM,
   autoSnapEnabled = true,
   onTransformChange,
   onTransformStart,
@@ -480,11 +509,7 @@ export function SceneCanvas({
   onSupportHover,
   onActiveModelChange,
   onMarqueeSelectionChange,
-  trunkPlacementPreview,
-  branchPlacementPreview,
-  leafPlacementPreview,
-  bracePlacementPreview,
-  kickstandPlacementPreview,
+  placementPreviews = EMPTY_PLACEMENT_PREVIEWS,
   jointPlacementPreview,
   gpuPickingTest,
   selectionHighlightMode,
@@ -503,10 +528,7 @@ export function SceneCanvas({
   duplicateActivePreviewTransform,
   arrangeArrayPreviewItems,
   hideDuplicateSourceDuringApply,
-  isBranchPlacementActive,
-  isLeafPlacementActive,
-  isBracePlacementActive,
-  isKickstandPlacementActive,
+  placementActive = EMPTY_PLACEMENT_ACTIVE,
   hideCrossSectionCap = false,
   branchTipPosition,
   branchHoverPosition,
@@ -517,11 +539,6 @@ export function SceneCanvas({
   hoverTintStrength,
   selectedTintStrength,
   children,
-  expansionSimulator,
-  showExpansion,
-  classificationFaceLabels,
-  classificationGeometry,
-  showClassification,
   view3dSettings,
   supportRenderRefreshNonce = 0,
   gizmoResetNonce = 0,
@@ -551,7 +568,6 @@ export function SceneCanvas({
   shaderType?: import('@/features/shaders/mesh').MeshShaderType;
   matcapVariant?: import('@/features/shaders/mesh').MatcapVariant;
   flatUseVertexColors?: boolean;
-  toonSteps?: number;
   xrayOpacity?: number;
   heatmapMinAngle?: number;
   heatmapMaxAngle?: number;
@@ -562,7 +578,15 @@ export function SceneCanvas({
   onCameraChange?: () => void;
   onCameraEnd?: () => void;
   islandMarkers?: IslandMarker[];
+  /** World-space contact footprints to draw as instanced discs. */
+  islandInstances?: IslandInstances | null;
   overhangIslands?: DetectedIsland[];
+  /** False when the scan's pose needs no anti-topple contact, so the overlay
+   *  mutes the steep-flat patches it will not cover. */
+  toppleCoverage?: boolean;
+  /** The pose's total drag moment (mm³), so the overlay can weigh a patch's
+   *  share of it exactly as the placement does. */
+  dragTotalMm3?: number;
   overlayBrushRadius?: number;
   overlayColor?: string;
   overlayOpacity?: number;
@@ -572,6 +596,8 @@ export function SceneCanvas({
   directionalIntensity?: number;
   headlightIntensity?: number;
   materialRoughness?: number;
+  /** Multiplier on the baked occlusion's strength; 0 means the bake is off. */
+  bakedAoIntensity?: number;
   scanResults?: ScanResults | null;
   layerHeightMm?: number;
   scanBBox?: THREE.Box3 | null;
@@ -630,11 +656,8 @@ export function SceneCanvas({
   onSupportHover?: (hit: THREE.Intersection | null) => void;
   onActiveModelChange?: (id: string | null, options?: { selectionMode?: 'single' | 'toggle' | 'add' }) => void;
   onMarqueeSelectionChange?: (ids: string[]) => void;
-  trunkPlacementPreview?: SupportData | null;
-  branchPlacementPreview?: SupportData | null;
-  leafPlacementPreview?: SupportData | null;
-  bracePlacementPreview?: import('@/supports/SupportTypes/Brace/bracePlacementState').BracePreviewData | null;
-  kickstandPlacementPreview?: SupportData | null;
+  /** Live placement previews, keyed by type. */
+  placementPreviews?: SupportPlacementPreviews;
   jointPlacementPreview?: { pos: { x: number; y: number; z: number }; diameter: number } | null;
   gpuPickingTest?: boolean;
   selectionHighlightMode?: SelectionHighlightMode;
@@ -647,6 +670,8 @@ export function SceneCanvas({
   supportDragTransactionId?: number;
   renderSceneOverlays?: (context: {
     raycastActiveModelFromRay: (ray: THREE.Ray) => THREE.Intersection | null;
+    /** Whether a model is being dragged, so overlays anchored to it can stand down. */
+    isDragging: boolean;
   }) => React.ReactNode;
   customPrepareMarqueeSelection?: {
     enabled: boolean;
@@ -699,10 +724,8 @@ export function SceneCanvas({
     };
   }>;
   hideDuplicateSourceDuringApply?: boolean;
-  isBranchPlacementActive?: boolean;
-  isLeafPlacementActive?: boolean;
-  isBracePlacementActive?: boolean;
-  isKickstandPlacementActive?: boolean;
+  /** Which placement modes are live, keyed by type. */
+  placementActive?: SupportPlacementActive;
   branchTipPosition?: { x: number; y: number; z: number } | null;
   branchHoverPosition?: { x: number; y: number; z: number } | null;
   leafTipPosition?: { x: number; y: number; z: number } | null;
@@ -714,14 +737,6 @@ export function SceneCanvas({
 
   children?: React.ReactNode;
 
-  // Expansion Visuals
-  expansionSimulator?: BasinFillSimulator | BasinFillProxy | null;
-  showExpansion?: boolean;
-
-  // Classification Visuals
-  classificationFaceLabels?: Int32Array;
-  classificationGeometry?: THREE.BufferGeometry;
-  showClassification?: boolean;
   view3dSettings?: View3DSettings;
   supportRenderRefreshNonce?: number;
   gizmoResetNonce?: number;
@@ -843,21 +858,9 @@ export function SceneCanvas({
 
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const { isActive: isJointCreationActive } = useJointCreationState();
-  const isPlacementActive = React.useMemo(() => {
-    return !!(
-      isBranchPlacementActive ||
-      isLeafPlacementActive ||
-      isBracePlacementActive ||
-      isKickstandPlacementActive ||
-      isJointCreationActive
-    );
-  }, [
-    isBranchPlacementActive,
-    isLeafPlacementActive,
-    isBracePlacementActive,
-    isKickstandPlacementActive,
-    isJointCreationActive
-  ]);
+  /** Whether any placement mode is live. Derived, so no type is named here. */
+  const supportCreationModeActive = Object.values(placementActive).some(Boolean);
+  const isPlacementActive = supportCreationModeActive || isJointCreationActive;
   // The visual-settings panel is a fixed 48px-wide strip; the view cube offsets
   // by its full extent so it never overlaps the floating panel.
   const nonPrintingViewCubeRightMargin = 48 + FLOATING_PANEL_RIGHT_INSET_PX + VIEW_CUBE_PANEL_GAP_PX + VIEW_CUBE_HALF_EXTENT_PX;
@@ -879,10 +882,14 @@ export function SceneCanvas({
     getSupportSnapshot,
     getSupportSnapshot,
   );
-  const supportSettings = React.useSyncExternalStore(
+  // The only support setting this canvas reads is the tip's contact diameter, and
+  // a preset switch rewrites the whole settings object. Subscribing to the object
+  // re-rendered this canvas - and the scene tree under it - for a field that may
+  // not have moved; the snapshot is the number, so only a change to it does.
+  const tipContactDiameterMm = React.useSyncExternalStore(
     subscribeToSettings,
-    getSettings,
-    getSettings,
+    () => getSettings().tip.contactDiameterMm,
+    () => getSettings().tip.contactDiameterMm,
   );
   const isLinux = useIsLinux();
   const sceneHoveredSupportId = useSceneHoveredSupportId();
@@ -906,18 +913,11 @@ export function SceneCanvas({
     };
   }, []);
 
-  const kickstandStateForBounds = React.useSyncExternalStore(
-    subscribeToKickstandStore,
-    getKickstandSnapshot,
-    getKickstandSnapshot,
-  );
-
   const raftSettingsForBounds = React.useSyncExternalStore(
     subscribeToRaftStore,
     getRaftSettings,
     getRaftSettings,
   );
-
 
   const models = React.useMemo<LoadedModel[]>(() => {
     if (modelsProp.length > 0) return modelsProp;
@@ -1035,9 +1035,7 @@ export function SceneCanvas({
 
   const prevBranchHoverDotVisibleRef = React.useRef<boolean | null>(null);
   const prevLeafHoverDotVisibleRef = React.useRef<boolean | null>(null);
-  const supportPlacementGuideRafRef = React.useRef<number | null>(null);
-  const supportPlacementGuidePendingZRef = React.useRef<number | null>(null);
-  const [supportPlacementGuideZ, setSupportPlacementGuideZ] = React.useState<number | null>(null);
+  const supportPlacementGuideActive = useSupportPlacementGuideActive();
   const [supportHelpEnabled, setSupportHelpEnabled] = React.useState(() => getSupportPlacementHelpEnabled());
   React.useEffect(() => subscribeSupportPlacementHelp(() => setSupportHelpEnabled(getSupportPlacementHelpEnabled())), []);
 
@@ -1149,11 +1147,14 @@ export function SceneCanvas({
     } else if (!next) {
       crossSectionLiveTransformsRef.current.clear();
     }
-    // During active drag, avoid per-frame React rerenders; scene objects are
-    // moved imperatively and this ref remains the source of truth.
-    if (isGizmoDragging) return;
+    // Scene objects are moved imperatively and this ref remains the source of
+    // truth, so a drag does not need a rerender to draw. The out-of-bounds test
+    // does: it compares a box against the build volume, and without this it only
+    // sees where the model was when the gesture started, so the red volume and the
+    // stripe appeared on release. Pointer moves are frame-throttled by the browser,
+    // which keeps this to about one bump per frame.
     setLiveDragTransformVersion((value) => value + 1);
-  }, [activeModelId, isGizmoDragging]);
+  }, [activeModelId]);
 
   const {
     effectiveHoldSupportDragDelta,
@@ -1281,6 +1282,12 @@ export function SceneCanvas({
   const wheelZoomInteractionActiveRef = React.useRef(false);
   const trackpadGestureEndTimeoutRef = React.useRef<number | null>(null);
   const trackpadGestureActionRef = React.useRef<TrackpadGestureAction | null>(null);
+  // Where a trackpad gesture wants the camera, and when it last asked. The
+  // camera is eased onto the pose by `TrackpadGesturePoseApplier`, which owns
+  // the pose's lifetime off `trackpadPoseLastEventAtRef` — not off the orbit
+  // interaction, which can end in the middle of a gesture.
+  const trackpadPoseRef = React.useRef<TrackpadGesturePose | null>(null);
+  const trackpadPoseLastEventAtRef = React.useRef(0);
   // One classifier for both wheel handlers: they see the same events, and its
   // verdict is only stable if it watches the whole stream.
   const wheelDeviceClassifierRef = React.useRef(createWheelDeviceClassifier());
@@ -1312,7 +1319,6 @@ export function SceneCanvas({
       return state !== 2 && state !== 4 && state !== 5;
     }, []);
 
-  const [mouseOrbitDragRunId, setMouseOrbitDragRunId] = React.useState(0);
   // When the native 3DxWare/navlib bridge is driving the camera, the Gamepad-API
   // SpaceMouseController is unmounted entirely so the two never fight over the
   // same physical puck.
@@ -1335,7 +1341,7 @@ export function SceneCanvas({
     activeBuildVolumeSettings.widthMm,
   ]);
 
-  const { defaultCamera, orbitTarget, setOrbitTargetFromPoint, introBoundsSnapshot, cameraIntroRunId, cameraHomeResetRunId } =
+  const { defaultCamera, orbitTarget, setOrbitTargetFromPoint, introBoundsSnapshot, cameraIntroRunId, cameraHomeResetRunId, resetCameraHome } =
     useStlLoadCameraIntro(models, buildVolumeCenterTarget, { deferIntro: deferCameraIntro });
   const [cameraIntroCompletedRunId, setCameraIntroCompletedRunId] = React.useState(0);
   const [cameraHomeResetCompletedRunId, setCameraHomeResetCompletedRunId] = React.useState(0);
@@ -1496,7 +1502,6 @@ export function SceneCanvas({
     };
   }, [modelPickerEnabled, onModelHoverModelChange]);
 
-
   const selectModelFromPointerHit = React.useCallback((modelId: string | null | undefined) => {
     if (mode !== 'prepare') return;
     if (!modelId || !onActiveModelChange) return;
@@ -1529,6 +1534,12 @@ export function SceneCanvas({
     transformMode,
     containerRef,
   });
+  useSupportBlockerSceneBindings({ mode, transformMode });
+  const blockerStrokeActive = React.useSyncExternalStore(
+    subscribeSupportBlockers,
+    isSupportBlockerStrokeActive,
+    isSupportBlockerStrokeActive,
+  );
 
   const [isCameraBelowBuildPlate, setIsCameraBelowBuildPlate] = React.useState(false);
   const [buildPlateOpacity, setBuildPlateOpacity] = React.useState(1);
@@ -1556,9 +1567,62 @@ export function SceneCanvas({
   const selectedTintColor = selectionColor ?? '#ec2a77';
   const likelySupportGeometryTintColor = '#c8752a';
 
+  // One walk per state change, keyed by model, so the per-model bounds callback
+  // below does not re-walk every collection for every model.
+  //
+  // Keyed on the collections the walk reads, not on the snapshot: the snapshot's
+  // identity changes on any store write, including the ones a model selection
+  // makes, and a new identity here poisoned the per-model bounds cache below -
+  // which re-ran the raft's polygon booleans for every model, ~120 ms of blocking
+  // work on a click in a production build.
+  const raftBaseCirclesByModelKey = React.useMemo(
+    () => collectRaftBaseCirclesByModel(supportStateForBounds, {
+      fallbackModelKey: RAFT_UNASSIGNED_MODEL_KEY,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the collections the walk reads; the helper returns exactly those, in a fixed order.
+    raftFootprintSourceRefs(supportStateForBounds),
+  );
+
+  /**
+   * A model's support-and-raft extent, kept per model until the supports or the
+   * raft settings change.
+   *
+   * Nothing in it depends on a model's transform, but its callers do: the scene's
+   * per-model bounds are rebuilt whenever the active transform moves, which a
+   * selection does. Recomputing the extent then re-ran the raft's polygon
+   * booleans (Clipper) for all 17 models, measured at 215 ms of blocking long
+   * tasks on a click in a production build. Keyed on the collections, a selection
+   * finds every entry already there.
+   */
+  const supportRaftBoundsCacheRef = React.useRef<{
+    key: readonly unknown[];
+    byModel: Map<string, THREE.Box3 | null>;
+  } | null>(null);
+
   const computeSupportAndRaftWorldBounds = React.useCallback((modelId: string): THREE.Box3 | null => {
     // During active gizmo drags, keep bounds work minimal to preserve interaction FPS.
     if (isGizmoDragging || isGizmoRetargeting) return null;
+
+    const key = [
+      raftSettingsForBounds,
+      raftBaseCirclesByModelKey,
+      supportStateForBounds.knots,
+      ...SUPPORT_COLLECTION_KEYS.map((collectionKey) => supportStateForBounds[collectionKey]),
+    ];
+    let cache = supportRaftBoundsCacheRef.current;
+    if (!cache || cache.key.length !== key.length || !cache.key.every((ref, i) => ref === key[i])) {
+      cache = { key, byModel: new Map() };
+      supportRaftBoundsCacheRef.current = cache;
+    } else if (cache.byModel.has(modelId)) {
+      return cache.byModel.get(modelId) ?? null;
+    }
+
+    const computed = computeSupportAndRaftWorldBoundsUncached(modelId);
+    cache.byModel.set(modelId, computed);
+    return computed;
+  }, [isGizmoDragging, isGizmoRetargeting, raftBaseCirclesByModelKey, raftSettingsForBounds, supportStateForBounds]);
+
+  const computeSupportAndRaftWorldBoundsUncached = React.useCallback((modelId: string): THREE.Box3 | null => {
 
     const bounds = new THREE.Box3();
     let hasAny = false;
@@ -1585,97 +1649,109 @@ export function SceneCanvas({
       expandByRadius(rootTop, rootRadius);
     }
 
+    // The knots this model's supports hang from, read through each type's
+    // declared `hostedBy` knot edges.
     const modelKnotIds = new Set<string>();
-    for (const branch of Object.values(supportStateForBounds.branches)) {
-      if (branch.modelId === modelId) modelKnotIds.add(branch.parentKnotId);
-    }
-    for (const leaf of Object.values(supportStateForBounds.leaves)) {
-      if (leaf.modelId === modelId) modelKnotIds.add(leaf.parentKnotId);
-    }
-    for (const brace of Object.values(supportStateForBounds.braces)) {
-      if (brace.modelId !== modelId) continue;
-      modelKnotIds.add(brace.startKnotId);
-      modelKnotIds.add(brace.endKnotId);
-    }
-    for (const kickstand of Object.values(kickstandStateForBounds.kickstands)) {
-      if (kickstand.modelId === modelId) modelKnotIds.add(kickstand.hostKnotId);
+    for (const descriptor of SUPPORT_TYPES) {
+      const knotFields = hostKnotFieldsFor(descriptor.id);
+      if (knotFields.length === 0) continue;
+      const collection = supportStateForBounds[descriptor.location.key] as unknown as
+        Record<string, Record<string, unknown>> | undefined;
+      for (const entity of Object.values(collection ?? {})) {
+        if (entity.modelId !== modelId) continue;
+        for (const field of knotFields) {
+          const knotId = entity[field];
+          if (typeof knotId === 'string') modelKnotIds.add(knotId);
+        }
+      }
     }
 
     for (const knotId of modelKnotIds) {
-      const knot = supportStateForBounds.knots[knotId] ?? kickstandStateForBounds.knots[knotId];
+      const knot = supportStateForBounds.knots[knotId];
       if (!knot?.pos) continue;
       expandByRadius(knot.pos, Math.max(0.001, (knot.diameter ?? 1.2) / 2));
     }
 
-    for (const trunk of Object.values(supportStateForBounds.trunks)) {
-      if (trunk.modelId !== modelId) continue;
-      for (const seg of trunk.segments) {
-        if (seg.topJoint?.pos) expandByRadius(seg.topJoint.pos, Math.max(0.001, (seg.topJoint.diameter ?? seg.diameter) / 2));
-        if (seg.bottomJoint?.pos) expandByRadius(seg.bottomJoint.pos, Math.max(0.001, (seg.bottomJoint.diameter ?? seg.diameter) / 2));
-      }
-      if (trunk.contactCone) {
-        expandByRadius(trunk.contactCone.pos, Math.max(0.001, trunk.contactCone.profile.contactDiameterMm / 2));
-        const socket = getFinalSocketPosition(trunk.contactCone);
-        expandByRadius(socket, Math.max(0.001, trunk.contactCone.profile.bodyDiameterMm / 2));
-      }
-    }
-
-    for (const branch of Object.values(supportStateForBounds.branches)) {
-      if (branch.modelId !== modelId) continue;
-      for (const seg of branch.segments) {
-        if (seg.topJoint?.pos) expandByRadius(seg.topJoint.pos, Math.max(0.001, (seg.topJoint.diameter ?? seg.diameter) / 2));
-        if (seg.bottomJoint?.pos) expandByRadius(seg.bottomJoint.pos, Math.max(0.001, (seg.bottomJoint.diameter ?? seg.diameter) / 2));
-      }
-      if (branch.contactCone) {
-        expandByRadius(branch.contactCone.pos, Math.max(0.001, branch.contactCone.profile.contactDiameterMm / 2));
-        const socket = getFinalSocketPosition(branch.contactCone);
-        expandByRadius(socket, Math.max(0.001, branch.contactCone.profile.bodyDiameterMm / 2));
+    // Each type's base, for the types that carry one instead of a Roots entry:
+    // the frustum IS the root. Nothing else here is type-specific, so the rest
+    // of such a type is covered by the segment and contact passes below.
+    for (const placement of INLINE_ROOT_TYPES) {
+      const entities = supportStateForBounds[placement.collectionKey] as unknown as
+        | Record<string, Record<string, unknown>>
+        | undefined;
+      for (const entity of Object.values(entities ?? {})) {
+        if (entity.modelId !== modelId) continue;
+        const base = entity[placement.posField] as { x: number; y: number; z: number } | undefined;
+        const radius = entity[placement.radiusField];
+        if (!base) continue;
+        expandByRadius(base, Math.max(0.001, (typeof radius === 'number' ? radius : 0) / 2));
       }
     }
 
-    for (const leaf of Object.values(supportStateForBounds.leaves)) {
-      if (leaf.modelId !== modelId || !leaf.contactCone) continue;
-      expandByRadius(leaf.contactCone.pos, Math.max(0.001, leaf.contactCone.profile.contactDiameterMm / 2));
-      const socket = getFinalSocketPosition(leaf.contactCone);
-      expandByRadius(socket, Math.max(0.001, leaf.contactCone.profile.bodyDiameterMm / 2));
-    }
+    // One pass for every type that declares a segment. The joints are handled
+    // the same way for all of them; the contacts differ, and a contact is
+    // declared with its own kind and field. A cone reaches its socket through
+    // the primitive's thickness, so it contributes a circle at each end and at
+    // two radii; a disk's socket is the joint the segment pass already
+    // expanded, so it contributes one.
+    for (const descriptor of SUPPORT_TYPES) {
+      const entities = supportStateForBounds[descriptor.location.key] as unknown as
+        | Record<string, Record<string, unknown>>
+        | undefined;
+      // Read once per type, not once per entity: this allocates.
+      const contactEndpoints = contactEndpointsFor(descriptor.id);
 
-    for (const twig of Object.values(supportStateForBounds.twigs)) {
-      if (twig.modelId !== modelId) continue;
-      for (const seg of twig.segments) {
-        if (seg.topJoint?.pos) expandByRadius(seg.topJoint.pos, Math.max(0.001, (seg.topJoint.diameter ?? seg.diameter) / 2));
-        if (seg.bottomJoint?.pos) expandByRadius(seg.bottomJoint.pos, Math.max(0.001, (seg.bottomJoint.diameter ?? seg.diameter) / 2));
+      for (const entity of Object.values(entities ?? {})) {
+        if (entity.modelId !== modelId) continue;
+
+        // The two passes are not the same set of types: a leaf declares a
+        // contact and no segments, so skipping a type for having no shaft would
+        // drop its tip from the bounds entirely.
+        for (const segment of (descriptor.hasSegments ? (entity.segments ?? []) : []) as {
+          diameter: number;
+          topJoint?: { pos: { x: number; y: number; z: number }; diameter?: number };
+          bottomJoint?: { pos: { x: number; y: number; z: number }; diameter?: number };
+        }[]) {
+          if (segment.topJoint?.pos) {
+            expandByRadius(segment.topJoint.pos, Math.max(0.001, (segment.topJoint.diameter ?? segment.diameter) / 2));
+          }
+          if (segment.bottomJoint?.pos) {
+            expandByRadius(segment.bottomJoint.pos, Math.max(0.001, (segment.bottomJoint.diameter ?? segment.diameter) / 2));
+          }
+        }
+
+        for (const endpoint of contactEndpoints) {
+          const contact = entity[endpoint.field] as {
+            pos?: { x: number; y: number; z: number };
+            profile?: { contactDiameterMm?: number; bodyDiameterMm?: number };
+            contactDiameterMm?: number;
+          } | undefined;
+          if (!contact?.pos) continue;
+
+          const contactDiameter = endpoint.kind === 'cone'
+            ? contact.profile?.contactDiameterMm
+            : contact.contactDiameterMm;
+          if (typeof contactDiameter === 'number') {
+            expandByRadius(contact.pos, Math.max(0.001, contactDiameter / 2));
+          }
+
+          if (endpoint.kind === 'cone' && typeof contact.profile?.bodyDiameterMm === 'number') {
+            expandByRadius(
+              getFinalSocketPosition(contact as never),
+              Math.max(0.001, contact.profile.bodyDiameterMm / 2),
+            );
+          }
+        }
       }
-      expandByRadius(twig.contactDiskA.pos, Math.max(0.001, twig.contactDiskA.contactDiameterMm / 2));
-      expandByRadius(twig.contactDiskB.pos, Math.max(0.001, twig.contactDiskB.contactDiameterMm / 2));
     }
 
-    for (const stick of Object.values(supportStateForBounds.sticks)) {
-      if (stick.modelId !== modelId) continue;
-      for (const seg of stick.segments) {
-        if (seg.topJoint?.pos) expandByRadius(seg.topJoint.pos, Math.max(0.001, (seg.topJoint.diameter ?? seg.diameter) / 2));
-        if (seg.bottomJoint?.pos) expandByRadius(seg.bottomJoint.pos, Math.max(0.001, (seg.bottomJoint.diameter ?? seg.diameter) / 2));
-      }
-      expandByRadius(stick.contactConeA.pos, Math.max(0.001, stick.contactConeA.profile.contactDiameterMm / 2));
-      expandByRadius(stick.contactConeB.pos, Math.max(0.001, stick.contactConeB.profile.contactDiameterMm / 2));
-      expandByRadius(getFinalSocketPosition(stick.contactConeA), Math.max(0.001, stick.contactConeA.profile.bodyDiameterMm / 2));
-      expandByRadius(getFinalSocketPosition(stick.contactConeB), Math.max(0.001, stick.contactConeB.profile.bodyDiameterMm / 2));
-    }
-
-    for (const kickstand of Object.values(kickstandStateForBounds.kickstands)) {
-      if (kickstand.modelId !== modelId) continue;
-      for (const seg of kickstand.segments) {
-        if (seg.topJoint?.pos) expandByRadius(seg.topJoint.pos, Math.max(0.001, (seg.topJoint.diameter ?? seg.diameter) / 2));
-        if (seg.bottomJoint?.pos) expandByRadius(seg.bottomJoint.pos, Math.max(0.001, (seg.bottomJoint.diameter ?? seg.diameter) / 2));
-      }
-    }
-
-    if (rootsForModel.length > 0 && raftSettingsForBounds.bottomMode !== 'off') {
-      const circles: SupportBaseCircle[] = rootsForModel.map((root) => ({
-        x: root.transform.pos.x,
-        y: root.transform.pos.y,
-        r: root.diameter / 2,
-      }));
+    // The same base circles the raft is drawn from, so bounds account for the
+    // raft that actually exists. This read `roots` alone and so missed the types
+    // carrying their own inline root, and skipped the raft entirely for a model
+    // whose only bases were of those types.
+    const modelBaseCircles = raftBaseCirclesByModelKey.get(modelId) ?? [];
+    if (modelBaseCircles.length > 0 && raftSettingsForBounds.bottomMode !== 'off') {
+      const circles: SupportBaseCircle[] = modelBaseCircles;
 
       const thickness = raftSettingsForBounds.bottomMode === 'line' ? raftSettingsForBounds.lineHeightMm : raftSettingsForBounds.thickness;
       const chamferInset = Math.max(0, thickness) * Math.tan((Math.PI / 180) * (90 - Math.min(90, Math.max(45, raftSettingsForBounds.chamferAngle))));
@@ -1705,7 +1781,7 @@ export function SceneCanvas({
     }
 
     return hasAny ? bounds : null;
-  }, [isGizmoDragging, isGizmoRetargeting, kickstandStateForBounds, raftSettingsForBounds, supportStateForBounds]);
+  }, [raftBaseCirclesByModelKey, raftSettingsForBounds, supportStateForBounds]);
 
   const computeModelWorldBounds = React.useCallback((
     model: LoadedModel,
@@ -1764,22 +1840,32 @@ export function SceneCanvas({
   );
 
   const modelWorldBounds = React.useMemo(() => {
-    if (isGizmoDragging || isGizmoRetargeting) {
-      return cachedModelWorldBoundsRef.current;
-    }
+    const liveGroupFor = (modelId: string) => (
+      (isGizmoDragging || isGizmoRetargeting) ? meshRefs.current[modelId] ?? null : null
+    );
 
     const map = new Map<string, THREE.Box3>();
     for (const model of models) {
       if (!model.visible) continue;
+      // During a drag the model group carries the live transform and the props do
+      // not, so the out-of-bounds test has to read the group or it only sees where
+      // the model was when the gesture started.
+      const liveGroup = liveGroupFor(model.id);
+      const liveTransform: ModelTransform | null = liveGroup
+        ? {
+            position: liveGroup.position,
+            rotation: new THREE.Euler().setFromQuaternion(liveGroup.quaternion, 'ZYX'),
+            scale: liveGroup.scale,
+          }
+        : null;
       const effectiveTransform =
-        (model.id === activeTransformOverrideModelId && transform)
-          ? transform
-          : model.transform;
+        liveTransform
+        ?? ((model.id === activeTransformOverrideModelId && transform) ? transform : model.transform);
       map.set(model.id, computeModelWorldBounds(model, effectiveTransform, buildVolumeBounds));
     }
     cachedModelWorldBoundsRef.current = map;
     return map;
-  }, [activeTransformOverrideModelId, buildVolumeBounds, computeModelWorldBounds, isGizmoDragging, isGizmoRetargeting, models, transform]);
+  }, [activeTransformOverrideModelId, buildVolumeBounds, computeModelWorldBounds, isGizmoDragging, isGizmoRetargeting, liveDragTransformVersion, models, transform]);
 
   const crossSectionCapEntries = React.useMemo<CrossSectionStencilCapEntry[]>(() => {
     return models
@@ -1803,7 +1889,10 @@ export function SceneCanvas({
 
   const outOfBoundsModels = React.useMemo(() => {
     if (!buildVolumeBounds) return [] as Array<{ id: string; name: string; bounds: THREE.Box3 }>;
-    if (isGizmoDragging || isGizmoRetargeting || outOfBoundsRotateGraceActive) return [] as Array<{ id: string; name: string; bounds: THREE.Box3 }>;
+    // The rotate grace only: a rotate sweep clips a corner for a frame, and that
+    // is flicker. A drag is included now, so the indication follows the model out
+    // of the volume instead of appearing when it is released.
+    if (outOfBoundsRotateGraceActive) return [] as Array<{ id: string; name: string; bounds: THREE.Box3 }>;
 
     return models
       .filter((model) => model.visible)
@@ -1818,6 +1907,7 @@ export function SceneCanvas({
       .filter(({ bounds }) => isBoundsOutsideVolume(bounds, buildVolumeBounds, BUILD_VOLUME_BOUNDS_EPS_MM));
   }, [
     BUILD_VOLUME_BOUNDS_EPS_MM,
+    liveDragTransformVersion,
     buildVolumeBounds,
     computeModelWorldBounds,
     isGizmoDragging,
@@ -1856,12 +1946,6 @@ export function SceneCanvas({
   }, [activeModelId, hoveredModelId]);
   const supportHoverModelId = modelPickerEnabled ? hoveredModelId : null;
 
-  const supportCreationModeActive = Boolean(
-    isBranchPlacementActive
-    || isLeafPlacementActive
-    || isBracePlacementActive
-    || isKickstandPlacementActive,
-  );
   const suppressSupportSelectionAndHover = !modelPickerEnabled || (mode === 'prepare' && transformMode === 'transform');
 
   const supportHoverTargetActive = isSupportTargetHoverCategory(supportStateForBounds.hoveredCategory);
@@ -1872,56 +1956,70 @@ export function SceneCanvas({
   const suppressSupportPlacementPreviewRendering = contactDiskHudInteractionActive
     || (!supportCreationModeActive && (supportHoverTargetActive || sceneHoveredSupportId !== null));
 
-  const queueSupportPlacementGuideZ = React.useCallback((nextZ: number | null) => {
-    supportPlacementGuidePendingZRef.current = nextZ;
-    if (supportPlacementGuideRafRef.current !== null) return;
-
-    supportPlacementGuideRafRef.current = requestAnimationFrame(() => {
-      supportPlacementGuideRafRef.current = null;
-      const pendingZ = supportPlacementGuidePendingZRef.current;
-      supportPlacementGuidePendingZRef.current = null;
-      setSupportPlacementGuideZ((previous) => {
-        if (previous === null && pendingZ === null) return previous;
-        if (previous !== null && pendingZ !== null && Math.abs(previous - pendingZ) <= 0.02) return previous;
-        return pendingZ;
-      });
-    });
-  }, []);
-
-  React.useEffect(() => {
-    return () => {
-      if (supportPlacementGuideRafRef.current !== null) {
-        cancelAnimationFrame(supportPlacementGuideRafRef.current);
-        supportPlacementGuideRafRef.current = null;
-      }
-      supportPlacementGuidePendingZRef.current = null;
-    };
-  }, []);
-
+  // The guide plane Z has to follow the cursor exactly, so it never rides in
+  // React state: a deadband in Z (the old 0.02 mm one) steps the line by
+  // z / tan(surface tilt) on screen -- several pixels per step on a shallow
+  // face, invisible on a steep one. The plane lives in its own store now and
+  // StlMesh reads it every frame for the uniform, so hovering costs no render
+  // and the plane has somewhere to live besides this component's state.
   React.useEffect(() => {
     if (mode === 'support' && !blockSupportPlacement) return;
-    queueSupportPlacementGuideZ(null);
-  }, [blockSupportPlacement, mode, queueSupportPlacementGuideZ]);
+    setSupportPlacementGuideZ(null);
+  }, [blockSupportPlacement, mode]);
 
   const handleSupportHover = React.useCallback((hit: THREE.Intersection | null) => {
-    if (mode === 'support' && !blockSupportPlacement) {
-      const nextZ = hit && Number.isFinite(hit.point.z) ? hit.point.z : null;
-      queueSupportPlacementGuideZ(nextZ);
-    } else {
-      queueSupportPlacementGuideZ(null);
+    // A tip drag owns the plane while it runs: the same pointer hovers the
+    // model, and the hover must not fight the contact height being dragged.
+    if (!isContactDiskHudDraggingActive()) {
+      setSupportPlacementGuideZ(mode === 'support' && !blockSupportPlacement && hit ? hit.point.z : null);
     }
 
     onSupportHover?.(hit);
-  }, [blockSupportPlacement, mode, onSupportHover, queueSupportPlacementGuideZ]);
+  }, [blockSupportPlacement, mode, onSupportHover]);
 
-  const supportPlacementIndicatorPlaneZ = React.useMemo(() => {
-    if (mode !== 'support' || blockSupportPlacement) return null;
-    if (supportPlacementGuideZ == null || !Number.isFinite(supportPlacementGuideZ)) return null;
-    return supportPlacementGuideZ;
-  }, [blockSupportPlacement, mode, supportPlacementGuideZ]);
+  const supportPlacementGuideEnabled = React.useMemo(() => (
+    mode === 'support' && !blockSupportPlacement && supportPlacementGuideActive
+  ), [blockSupportPlacement, mode, supportPlacementGuideActive]);
+
+  // Which placement mode is active. Read by the preview gate, and by the two
+  // questions that consult several live previews in a declared order.
+  // The prop is already the record these memos read, so there is nothing to
+  // rebuild -- and `placementActive` is stable by reference from its producer.
+  const activePlacementModes: Partial<Record<SupportTypeId, boolean>> = placementActive;
+
+  // The first live preview with something to say. Suppressed wholesale while a
+  // debug overlay owns the viewport.
+  const placementLimitation = React.useMemo((): { error: LimitationCode | null; warning: WarningCode | null } => {
+    if (suppressSupportPlacementPreviewRendering || supportPathfindingDebugState.enabled) {
+      return { error: null, warning: null };
+    }
+
+    const order = previewTypesByPriority('limitationFeedback', activePlacementModes);
+    const first = <T,>(read: (preview: SupportData) => T | null | undefined): T | null => {
+      for (const typeId of order) {
+        const preview = placementPreviews[typeId] as SupportData | null | undefined;
+        const value = preview ? read(preview) : null;
+        if (value != null) return value;
+      }
+      return null;
+    };
+
+    return {
+      error: first((preview) => preview.error),
+      warning: first((preview) => preview.warning),
+    };
+  }, [
+    activePlacementModes,
+    placementPreviews,
+    suppressSupportPlacementPreviewRendering,
+    supportPathfindingDebugState.enabled,
+  ]);
 
   const supportPlacementGuideLineWidthMm = React.useMemo(() => {
-    const toGuideWidthMm = (contactDiameterMm: number) => Math.max(0.01, contactDiameterMm * 0.3);
+    // The stripe is as wide as the contact disk that will land on it, so the
+    // line can be lined up with the disk by eye. Half of it read as a thinner
+    // guide than the contact it was standing in for.
+    const toGuideWidthMm = (contactDiameterMm: number) => Math.max(0.01, contactDiameterMm);
 
     const pickPreviewContactDiameterMm = (preview: SupportData | null | undefined): number | null => {
       if (!preview) return null;
@@ -1941,44 +2039,26 @@ export function SceneCanvas({
       return Math.max(...diameters);
     };
 
-    const orderedPreviews: Array<SupportData | null | undefined> = [];
-
-    if (isBranchPlacementActive) orderedPreviews.push(branchPlacementPreview);
-    if (isLeafPlacementActive) orderedPreviews.push(leafPlacementPreview);
-    if (isKickstandPlacementActive) orderedPreviews.push(kickstandPlacementPreview);
-
-    orderedPreviews.push(
-      trunkPlacementPreview,
-      branchPlacementPreview,
-      leafPlacementPreview,
-      kickstandPlacementPreview,
-    );
-
-    for (const preview of orderedPreviews) {
-      const diameter = pickPreviewContactDiameterMm(preview);
+    for (const typeId of previewTypesByPriority('contactGuideWidth', activePlacementModes)) {
+      const diameter = pickPreviewContactDiameterMm(placementPreviews[typeId] as SupportData | null | undefined);
       if (diameter != null) return toGuideWidthMm(diameter);
     }
 
-    return toGuideWidthMm(supportSettings.tip.contactDiameterMm || DEFAULT_TIP_CONTACT_DIAMETER_MM);
+    return toGuideWidthMm(tipContactDiameterMm || DEFAULT_TIP_CONTACT_DIAMETER_MM);
   }, [
-    branchPlacementPreview,
-    isBranchPlacementActive,
-    isKickstandPlacementActive,
-    isLeafPlacementActive,
-    kickstandPlacementPreview,
-    leafPlacementPreview,
-    supportSettings.tip.contactDiameterMm,
-    trunkPlacementPreview,
+    activePlacementModes,
+    placementPreviews,
+    tipContactDiameterMm,
   ]);
 
   const branchHoverDotVisible = Boolean(
     branchHoverPosition
     && !branchTipPosition
-    && !branchPlacementPreview
+    && !isPlacementPreviewForType(placementPreviews, BRANCH_FAMILY_PLACEMENT_OWNER)
     && !suppressSupportPlacementPreviewRendering
     && !supportHoverTargetActive
     && !!hoveredMeshModelId
-    && isBranchPlacementActive,
+    && isPlacementActiveForType(placementActive, BRANCH_FAMILY_PLACEMENT_OWNER),
   );
 
   const hasRaftSelection = !!committedActiveModelId || !!activeModelId || (selectedModelIds?.length ?? 0) > 0;
@@ -2193,7 +2273,7 @@ export function SceneCanvas({
   }, []);
 
   React.useEffect(() => {
-    const visible = !!branchHoverPosition && !branchTipPosition && !branchPlacementPreview;
+    const visible = !!branchHoverPosition && !branchTipPosition && !placementPreviews[BRANCH_FAMILY_PLACEMENT_OWNER];
     if (prevBranchHoverDotVisibleRef.current === null) {
       prevBranchHoverDotVisibleRef.current = visible;
       return;
@@ -2201,10 +2281,10 @@ export function SceneCanvas({
     if (prevBranchHoverDotVisibleRef.current !== visible) {
       prevBranchHoverDotVisibleRef.current = visible;
     }
-  }, [branchHoverPosition, branchTipPosition, branchPlacementPreview]);
+  }, [branchHoverPosition, branchTipPosition, placementPreviews[BRANCH_FAMILY_PLACEMENT_OWNER]]);
 
   React.useEffect(() => {
-    const visible = !!leafHoverPosition && !leafTipPosition && !leafPlacementPreview;
+    const visible = !!leafHoverPosition && !leafTipPosition && !placementPreviews[LEAF_PLACEMENT_OWNER];
     if (prevLeafHoverDotVisibleRef.current === null) {
       prevLeafHoverDotVisibleRef.current = visible;
       return;
@@ -2212,7 +2292,7 @@ export function SceneCanvas({
     if (prevLeafHoverDotVisibleRef.current !== visible) {
       prevLeafHoverDotVisibleRef.current = visible;
     }
-  }, [leafHoverPosition, leafTipPosition, leafPlacementPreview]);
+  }, [leafHoverPosition, leafTipPosition, placementPreviews[LEAF_PLACEMENT_OWNER]]);
 
   // Computed refs for active model
   const activeGroupRef = React.useMemo(
@@ -2739,20 +2819,14 @@ export function SceneCanvas({
     const map = new Map<string, Array<Array<{ x: number; y: number; z: number }>>>();
     if (raftSettingsForBounds.bottomMode === 'off') return map;
 
-    const circlesByModelId = new Map<string, SupportBaseCircle[]>();
-    const collectRoot = (modelId: string | undefined, pos: { x: number; y: number }, diameter: number) => {
-      if (!modelId) return;
-      const circles = circlesByModelId.get(modelId) ?? [];
-      circles.push({ x: pos.x, y: pos.y, r: diameter / 2 });
-      circlesByModelId.set(modelId, circles);
-    };
-
-    for (const root of Object.values(supportStateForBounds.roots)) {
-      collectRoot(root.modelId, root.transform.pos, root.diameter);
-    }
-    for (const root of Object.values(kickstandStateForBounds.roots)) {
-      collectRoot(root.modelId, root.transform.pos, root.diameter);
-    }
+    // The same base circles the rendered raft is built from, so the ring a drag
+    // catches cannot disagree with the raft a user sees. This read only `roots`
+    // before, which missed the types that carry their own inline root -- their
+    // bases pushed the drawn raft out but not the grabbable outline.
+    const circlesByModelId = collectRaftBaseCirclesByModel(supportStateForBounds, {
+      fallbackModelKey: RAFT_UNASSIGNED_MODEL_KEY,
+    });
+    circlesByModelId.delete(RAFT_UNASSIGNED_MODEL_KEY);
 
     const thickness = raftSettingsForBounds.bottomMode === 'line'
       ? raftSettingsForBounds.lineHeightMm
@@ -2778,133 +2852,19 @@ export function SceneCanvas({
     }
 
     return map;
-  }, [kickstandStateForBounds.roots, raftSettingsForBounds, supportStateForBounds.roots]);
+    // The whole state, because the footprint walks the collections the registry
+    // names rather than `roots` alone. This memo only profiles circles, so it is
+    // cheap; the raft MESHES are the expensive part and they cache separately.
+  }, [raftSettingsForBounds, supportStateForBounds]);
 
   // Every support drawn as the polyline that runs along it: root or host knot,
   // each joint in order, and the contact cone at the tip. Built once per state
   // change — the marquee walks this on every pointer move. A curved segment is
   // approximated by its chord.
-  const supportMarqueeShapes = React.useMemo(() => {
-    type SupportPoint = { x: number; y: number; z: number };
-
-    const shapes: Array<{
-      id: string;
-      modelId: string | undefined;
-      points: SupportPoint[];
-      struts: MarqueeSegment[];
-    }> = [];
-
-    const chain = (
-      id: string,
-      modelId: string | undefined,
-      positions: Array<SupportPoint | null | undefined>,
-    ) => {
-      if (!id) return;
-
-      const points: SupportPoint[] = [];
-      for (const position of positions) {
-        if (!position) continue;
-        const previous = points[points.length - 1];
-        // Consecutive segments share a joint; keep it once.
-        if (previous && previous.x === position.x && previous.y === position.y && previous.z === position.z) {
-          continue;
-        }
-        points.push(position);
-      }
-
-      if (points.length === 0) return;
-
-      const struts: MarqueeSegment[] = [];
-      for (let i = 1; i < points.length; i += 1) {
-        struts.push([i - 1, i]);
-      }
-
-      shapes.push({ id, modelId, points, struts });
-    };
-
-    const jointPositions = (segments: Segment[]) => segments.flatMap((segment) => [
-      segment.bottomJoint?.pos,
-      segment.topJoint?.pos,
-    ]);
-
-    const conePositions = (cone: ContactCone) => [getFinalSocketPosition(cone), cone.pos];
-
-    for (const root of Object.values(supportStateForBounds.roots)) {
-      chain(root.id, root.modelId, [root.transform.pos]);
-    }
-
-    for (const trunk of Object.values(supportStateForBounds.trunks)) {
-      const root = supportStateForBounds.roots[trunk.rootId];
-      chain(trunk.id, trunk.modelId, [
-        root?.transform.pos,
-        ...jointPositions(trunk.segments),
-        ...(trunk.contactCone ? conePositions(trunk.contactCone) : []),
-      ]);
-    }
-
-    for (const branch of Object.values(supportStateForBounds.branches)) {
-      chain(branch.id, branch.modelId, [
-        supportStateForBounds.knots[branch.parentKnotId]?.pos,
-        ...jointPositions(branch.segments),
-        ...(branch.contactCone ? conePositions(branch.contactCone) : []),
-      ]);
-    }
-
-    for (const leaf of Object.values(supportStateForBounds.leaves)) {
-      if (!leaf.contactCone) continue;
-      chain(leaf.id, leaf.modelId, [
-        supportStateForBounds.knots[leaf.parentKnotId]?.pos,
-        ...conePositions(leaf.contactCone),
-      ]);
-    }
-
-    for (const twig of Object.values(supportStateForBounds.twigs)) {
-      chain(twig.id, twig.modelId, [
-        twig.contactDiskA.pos,
-        ...jointPositions(twig.segments),
-        twig.contactDiskB.pos,
-      ]);
-    }
-
-    for (const stick of Object.values(supportStateForBounds.sticks)) {
-      chain(stick.id, stick.modelId, [
-        stick.contactConeA.pos,
-        getFinalSocketPosition(stick.contactConeA),
-        ...jointPositions(stick.segments),
-        getFinalSocketPosition(stick.contactConeB),
-        stick.contactConeB.pos,
-      ]);
-    }
-
-    for (const brace of Object.values(supportStateForBounds.braces)) {
-      chain(brace.id, brace.modelId, [
-        supportStateForBounds.knots[brace.startKnotId]?.pos,
-        supportStateForBounds.knots[brace.endKnotId]?.pos,
-      ]);
-    }
-
-    for (const anchor of Object.values(supportStateForBounds.anchors)) {
-      chain(anchor.id, anchor.modelId, [
-        anchor.rootPos,
-        anchor.joint?.pos,
-        ...jointPositions(anchor.segments),
-        ...(anchor.contactCone ? conePositions(anchor.contactCone) : []),
-      ]);
-    }
-
-    for (const kickstand of Object.values(kickstandStateForBounds.kickstands)) {
-      const kickstandModelId = kickstand.modelId
-        ?? kickstandStateForBounds.roots[kickstand.rootId]?.modelId;
-      chain(kickstand.id, kickstandModelId, [
-        kickstandStateForBounds.roots[kickstand.rootId]?.transform.pos,
-        ...jointPositions(kickstand.segments),
-        supportStateForBounds.knots[kickstand.hostKnotId]?.pos
-          ?? kickstandStateForBounds.knots[kickstand.hostKnotId]?.pos,
-      ]);
-    }
-
-    return shapes;
-  }, [kickstandStateForBounds, supportStateForBounds]);
+  const supportMarqueeShapes = React.useMemo(
+    () => collectSupportMarqueeShapes(supportStateForBounds),
+    [supportStateForBounds],
+  );
 
   const supportMarqueeShapesByModelId = React.useMemo(() => {
     const map = new Map<string, typeof supportMarqueeShapes>();
@@ -3354,12 +3314,6 @@ export function SceneCanvas({
       sourceSupportAnchorCount += 1;
     }
 
-    for (const root of Object.values(kickstandStateForBounds.roots)) {
-      if (root.modelId !== duplicatePreviewModel.id) continue;
-      if (!sourceSupportAnchor) sourceSupportAnchor = new THREE.Vector3();
-      sourceSupportAnchor.add(root.transform.pos);
-      sourceSupportAnchorCount += 1;
-    }
 
     if (sourceSupportAnchor && sourceSupportAnchorCount > 0) {
       sourceSupportAnchor.multiplyScalar(1 / sourceSupportAnchorCount);
@@ -3395,7 +3349,7 @@ export function SceneCanvas({
     );
 
     return targetMatrix.multiply(sourceMatrix.clone().invert());
-  }, [duplicateActivePreviewTransform, duplicatePreviewModel, kickstandStateForBounds.roots, modelById, supportStateForBounds.roots]);
+  }, [duplicateActivePreviewTransform, duplicatePreviewModel, modelById, supportStateForBounds.roots]);
 
   const duplicateSourceSupportPreviewModelId = React.useMemo(() => {
     if (!hideDuplicateSourceDuringApply) return null;
@@ -3959,25 +3913,44 @@ export function SceneCanvas({
     transform,
   ]);
 
+  /**
+   * Models every raft has to clear: a model standing on the plate would
+   * otherwise have the raft's base run through it. Built here because the
+   * active model's live transform lives here (its entry in `models` is stale
+   * while a gizmo drag is in flight).
+   */
+  /**
+   * The visible models' plate footprints, which the raft is trimmed by.
+   *
+   * Deliberately *not* the active model's live transform. The clearance is where
+   * the models stand, not where a gizmo is dragging them, and the live transform
+   * is a frame behind a selection: taking it made this list depend on
+   * `activeModelId`, so choosing a model rebuilt it twice - once with the previous
+   * model's transform - and with it the raft clearance, every raft mesh and the
+   * footprint clustering behind them, ~700 ms on a scene with 1109 roots. The
+   * outline display keeps its own live-transform targets (see
+   * `footprintOutlineTargets`).
+   */
+  const plateClearanceTargets = React.useMemo<PlateFootprintSource[]>(
+    () => models
+      .filter((model) => model.visible)
+      .map((model) => ({
+        geometry: model.geometry,
+        transform: model.transform,
+      })),
+    [models],
+  );
+
   const crossSectionStencilSourceVersion = React.useMemo(() => ({
     supportRenderRefreshNonce,
     supportDragTransactionId,
     isGizmoDragging,
     effectiveHoldSupportDragDelta,
-    // Restrict invalidation to geometry-bearing support/kickstand refs plus
-    // raft geometry parameters. This avoids recaching on hover/selection-only
-    // snapshot churn that does not alter cross-section source geometry.
-    supportTrunksRef: supportStateForBounds.trunks,
-    supportRootsRef: supportStateForBounds.roots,
-    supportKnotsRef: supportStateForBounds.knots,
-    supportBranchesRef: supportStateForBounds.branches,
-    supportLeavesRef: supportStateForBounds.leaves,
-    supportTwigsRef: supportStateForBounds.twigs,
-    supportSticksRef: supportStateForBounds.sticks,
-    supportBracesRef: supportStateForBounds.braces,
-    kickstandKickstandsRef: kickstandStateForBounds.kickstands,
-    kickstandRootsRef: kickstandStateForBounds.roots,
-    kickstandKnotsRef: kickstandStateForBounds.knots,
+    // Every support collection the registry declares, so a new type is covered
+    // without editing this key.
+    ...Object.fromEntries(
+      SUPPORT_COLLECTION_KEYS.map((key) => [`support_${key}`, supportStateForBounds[key]]),
+    ),
     raftBottomMode: raftSettingsForBounds.bottomMode,
     raftThickness: raftSettingsForBounds.thickness,
     raftLineHeightMm: raftSettingsForBounds.lineHeightMm,
@@ -3992,9 +3965,6 @@ export function SceneCanvas({
   }), [
     effectiveHoldSupportDragDelta,
     isGizmoDragging,
-    kickstandStateForBounds.kickstands,
-    kickstandStateForBounds.knots,
-    kickstandStateForBounds.roots,
     models,
     raftSettingsForBounds.bottomMode,
     raftSettingsForBounds.chamferAngle,
@@ -4002,14 +3972,7 @@ export function SceneCanvas({
     raftSettingsForBounds.thickness,
     raftSettingsForBounds.wallEnabled,
     raftSettingsForBounds.wallHeight,
-    supportStateForBounds.braces,
-    supportStateForBounds.branches,
-    supportStateForBounds.knots,
-    supportStateForBounds.leaves,
-    supportStateForBounds.roots,
-    supportStateForBounds.sticks,
-    supportStateForBounds.trunks,
-    supportStateForBounds.twigs,
+    supportStateForBounds,
     supportDragTransactionId,
     supportRenderRefreshNonce,
     transform,
@@ -4027,6 +3990,26 @@ export function SceneCanvas({
   const introControllerBounds = introBoundsSnapshot;
 
   const introControllerRunId = cameraIntroRunId;
+
+  // Radius of the scene around the orbit target, used to size the orthographic
+  // depth range so it tracks the dolly radius instead of a blanket constant.
+  const orthoSceneRadiusMm = React.useMemo(() => {
+    let radius = 0;
+    if (introBoundsSnapshot && !introBoundsSnapshot.isEmpty()) {
+      radius = introBoundsSnapshot.getBoundingSphere(new THREE.Sphere()).radius;
+    }
+    const buildRadius = 0.5 * Math.hypot(
+      activeBuildVolumeSettings.widthMm,
+      activeBuildVolumeSettings.depthMm,
+      activeBuildVolumeSettings.maxZMm,
+    );
+    return Math.max(radius, buildRadius) + 200;
+  }, [
+    activeBuildVolumeSettings.depthMm,
+    activeBuildVolumeSettings.maxZMm,
+    activeBuildVolumeSettings.widthMm,
+    introBoundsSnapshot,
+  ]);
 
   const selectedSpaceMousePivotPoint = React.useMemo(() => {
     if (!activeModel?.visible) return null;
@@ -4255,51 +4238,27 @@ export function SceneCanvas({
   const { isDraggingHandle } = useCurveInteractionState();
   const interactionWarning = useInteractionWarning();
 
-  const trunkPlacementPreviewForRenderer = (
-    trunkPlacementPreview
-    && !suppressSupportPlacementPreviewRendering
-    && !blockSupportPlacement
-    && !isDraggingHandle
-    && !isBranchPlacementActive
-    && !isLeafPlacementActive
-    && !isKickstandPlacementActive
-    && !branchPlacementPreview
-  )
-    ? trunkPlacementPreview
-    : null;
+  const gatePlacementPreview = <T,>(typeId: SupportTypeId, preview: T | null | undefined): T | null => {
+    if (!preview || isDraggingHandle || suppressSupportPlacementPreviewRendering) return null;
 
-  const branchPlacementPreviewForRenderer = (
-    branchPlacementPreview
-    && isBranchPlacementActive
-    && !isDraggingHandle
-    && !suppressSupportPlacementPreviewRendering
-  )
-    ? branchPlacementPreview
-    : null;
+    const descriptor = getSupportTypeDescriptor(typeId);
+    if (descriptor.previewRequiresOwnMode && !activePlacementModes[typeId]) return null;
 
-  const leafPlacementPreviewForRenderer = (
-    leafPlacementPreview
-    && !isDraggingHandle
-    && !suppressSupportPlacementPreviewRendering
-  )
-    ? leafPlacementPreview
-    : null;
+    if (descriptor.previewYieldsToOtherModes) {
+      if (blockSupportPlacement) return null;
+      const displaced = SUPPORT_TYPES.some((other: { id: SupportTypeId; placementModeDisplacesDefault?: boolean }) =>
+        other.id !== typeId && other.placementModeDisplacesDefault && activePlacementModes[other.id]);
+      if (displaced || isPlacementPreviewForType(placementPreviews, BRANCH_FAMILY_PLACEMENT_OWNER)) return null;
+    }
 
-  const bracePlacementPreviewForRenderer = (
-    bracePlacementPreview
-    && !isDraggingHandle
-    && !suppressSupportPlacementPreviewRendering
-  )
-    ? bracePlacementPreview
-    : null;
+    return preview;
+  };
 
-  const kickstandPlacementPreviewForRenderer = (
-    kickstandPlacementPreview
-    && !isDraggingHandle
-    && !suppressSupportPlacementPreviewRendering
-  )
-    ? kickstandPlacementPreview
-    : null;
+  const gatedPlacementPreviews: SupportPlacementPreviews = Object.fromEntries(
+    SUPPORT_TYPES
+      .filter((descriptor) => descriptor.hasPlacementPreview)
+      .map((descriptor) => [descriptor.id, gatePlacementPreview(descriptor.id, placementPreviews[descriptor.id])]),
+  );
 
   // Listen for selection events to show/hide gizmo
   React.useEffect(() => {
@@ -4614,6 +4573,20 @@ export function SceneCanvas({
     return 220;
   }, [cameraFeelPreset]);
 
+  // How long the camera takes to cover most of the distance to the trackpad
+  // gesture's pose. Zero for `raw`, which applies the pose the frame it is read
+  // — the same discrete motion the trackpad had before the pose existed. The
+  // other presets mirror the damping OrbitControls applies to a mouse drag, so
+  // both input devices land on the same feel. Well inside
+  // `TRACKPAD_POSE_RELEASE_MS`, so the residual is sub-pixel by the time the
+  // pose is released and no travel is truncated.
+  const cameraTrackpadPoseTauMs = React.useMemo(() => {
+    if (cameraFeelPreset === 'raw') return 0;
+    if (cameraFeelPreset === 'precise') return 70;
+    if (cameraFeelPreset === 'fast') return 40;
+    return 55;
+  }, [cameraFeelPreset]);
+
   React.useEffect(() => {
     navigationResumeDelayRef.current = navigationResumeDelayMs;
   }, [navigationResumeDelayMs]);
@@ -4649,65 +4622,30 @@ export function SceneCanvas({
     if (!camera || !controls || controls.enabled === false || !container) return false;
 
     const rect = container.getBoundingClientRect();
-    const viewportHeight = Math.max(1, rect.height);
+
+    // The camera is *not* moved here. Each event is folded into the pose the
+    // gesture is asking for, and `TrackpadGesturePoseApplier` eases the camera
+    // onto it once per frame, so trackpad motion arrives at frame cadence
+    // instead of as one discrete step per wheel event. Seeding happens after
+    // `handleOrbitStart` has fired `picking-orbit-start`, so the pose inherits
+    // the re-levelled up-vector rather than a SpaceMouse roll.
+    const now = performance.now();
+    let pose = trackpadPoseRef.current;
+    if (!pose || now - trackpadPoseLastEventAtRef.current > TRACKPAD_POSE_RELEASE_MS) {
+      pose = createTrackpadGesturePose();
+      seedTrackpadGesturePose(pose, camera, controls.target);
+      trackpadPoseRef.current = pose;
+    }
+    trackpadPoseLastEventAtRef.current = now;
 
     if (action === 'pan') {
-      const RAW_TRACKPAD_PAN_SPEED = 1.0;
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
-      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
-
-      let worldUnitsPerPixel = 0;
-      if (camera instanceof THREE.OrthographicCamera) {
-        worldUnitsPerPixel = ((camera.top - camera.bottom) / Math.max(1e-6, camera.zoom)) / viewportHeight;
-      } else if (camera instanceof THREE.PerspectiveCamera) {
-        const distanceToTarget = Math.max(0.001, camera.position.distanceTo(controls.target));
-        const worldHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5) * distanceToTarget;
-        worldUnitsPerPixel = worldHeight / viewportHeight;
-      } else {
+      if (!applyTrackpadPanToPose(pose, camera, event.deltaX, event.deltaY, rect.height, cameraTrackpadPanAcceleration)) {
         return false;
       }
-
-      const panOffset = new THREE.Vector3()
-        .addScaledVector(right, event.deltaX * worldUnitsPerPixel * RAW_TRACKPAD_PAN_SPEED * cameraTrackpadPanAcceleration)
-        .addScaledVector(up, -event.deltaY * worldUnitsPerPixel * RAW_TRACKPAD_PAN_SPEED * cameraTrackpadPanAcceleration);
-
-      camera.position.add(panOffset);
-      controls.target.add(panOffset);
-      camera.updateMatrixWorld();
-      controls.update();
       return true;
     }
 
-    const worldUp = camera.up.clone().normalize();
-    const offset = camera.position.clone().sub(controls.target);
-    const offsetLength = Math.max(0.001, offset.length());
-    const RAW_TRACKPAD_ROTATE_SPEED = 1.0;
-    const rotateScale = 0.0022 * RAW_TRACKPAD_ROTATE_SPEED * cameraTrackpadOrbitAcceleration;
-    const yawAngle = event.deltaX * rotateScale;
-
-    offset.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(worldUp, yawAngle));
-
-    const normalizedOffset = offset.clone().normalize();
-    const currentPolar = Math.acos(THREE.MathUtils.clamp(normalizedOffset.dot(worldUp), -1, 1));
-    const nextPolar = THREE.MathUtils.clamp(currentPolar + (event.deltaY * rotateScale), 0.08, Math.PI - 0.08);
-    const pitchAngle = nextPolar - currentPolar;
-
-    const forward = normalizedOffset.clone().negate();
-    const rightAxis = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
-    if (rightAxis.lengthSq() < 1e-8) {
-      rightAxis.set(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
-    }
-
-    offset
-      .normalize()
-      .multiplyScalar(offsetLength)
-      .applyQuaternion(new THREE.Quaternion().setFromAxisAngle(rightAxis, pitchAngle));
-
-    camera.position.copy(controls.target).add(offset);
-    camera.up.copy(worldUp);
-    camera.lookAt(controls.target);
-    camera.updateMatrixWorld();
-    controls.update();
+    applyTrackpadOrbitToPose(pose, event.deltaX, event.deltaY, cameraTrackpadOrbitAcceleration);
     return true;
   }, [cameraTrackpadOrbitAcceleration, cameraTrackpadPanAcceleration]);
 
@@ -5146,7 +5084,11 @@ export function SceneCanvas({
     if (!cameraInteractionCycleEnabled) return;
     updateCameraBelowBuildPlate();
     onCameraChange?.();
-    window.dispatchEvent(new Event('picking-pan-change'));
+    // SpaceMouse navigation deliberately does NOT fire the picking-pan-* events:
+    // those pause GPU picking and disable mesh raycast (they assume the pointer is
+    // the input). With a SpaceMouse the mouse is free, so hover picking should keep
+    // following the camera. Autosave is told via the spacemouse-navigation-* events.
+    window.dispatchEvent(new Event('spacemouse-navigation-change'));
   }, [cameraInteractionCycleEnabled, onCameraChange, updateCameraBelowBuildPlate]);
 
   React.useEffect(() => {
@@ -5217,13 +5159,16 @@ export function SceneCanvas({
   }, []);
 
   const handleOrbitStart = React.useCallback(() => {
+    // Anything that is not a trackpad gesture — a mouse drag, OrbitControls'
+    // own wheel start — takes the camera, so drop the pose instead of letting
+    // the applier pull the camera back toward it mid-drag.
+    if (trackpadGestureActionRef.current === null) trackpadPoseRef.current = null;
     orbitInteractionActiveRef.current = true;
     orbitInteractionMovedRef.current = false;
     const isRotateInteraction = isOrbitInRotateState();
     if (useReactOrbitInteractionState) {
       setIsOrbitRotating(isRotateInteraction);
       setIsOrbitInteracting(true);
-      setMouseOrbitDragRunId((id) => id + 1);
     }
     window.dispatchEvent(new Event('picking-orbit-start'));
     if (!isRotateInteraction) {
@@ -5306,7 +5251,42 @@ export function SceneCanvas({
           cameraTrackpadSettings,
           cameraTrackpadModifierKey,
         );
-        if (action === null) return;
+        if (action === null) {
+          // Orthographic wheel is a real dolly: move the camera along its view
+          // axis and let OrthoFrustumSync derive the frustum from the new
+          // radius. OrbitControls' zoom is disabled in ortho, so we own it — and
+          // that is exactly why this path must check the idle signal itself.
+          // OrbitControls being disabled is how every other owner of the camera
+          // announces itself: a live SpaceMouse gesture, the Home / focus /
+          // mode-framing animations. Without the check the wheel dollies against
+          // them, fighting the SpaceMouse over the same dolly radius.
+          const camera = cameraRef.current;
+          const zoomControls = orbitControlsRef.current;
+          if (zoomControls && zoomControls.enabled === false) return;
+          if (camera instanceof THREE.OrthographicCamera && zoomControls) {
+            const rect = container.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              event.preventDefault();
+              const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+              const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+              const aspect = (camera.right - camera.left) / Math.max(1e-6, camera.top - camera.bottom);
+              const nextTarget = dollyOrthoToCursor({
+                camera,
+                target: zoomControls.target,
+                ndcX,
+                ndcY,
+                radiusScale: orthoWheelRadiusScale(event.deltaY, zoomControls.zoomSpeed),
+                minRadius: ORTHO_MIN_RADIUS,
+                maxRadius: ORTHO_MAX_RADIUS,
+                aspect,
+                options: { sceneRadius: orthoSceneRadiusMm, fovDeg: perspectiveFov },
+              });
+              zoomControls.target.copy(nextTarget);
+              zoomControls.update();
+            }
+          }
+          return;
+        }
 
         const controls = orbitControlsRef.current;
         if (!controls || controls.enabled === false) return;
@@ -5351,7 +5331,14 @@ export function SceneCanvas({
       container.removeEventListener('wheel', onTrackpadWheel, true);
       window.removeEventListener('blur', forceTrackpadGestureEnd);
       document.removeEventListener('visibilitychange', forceTrackpadGestureEnd);
-      forceTrackpadGestureEnd();
+      // Deliberately NOT forceTrackpadGestureEnd(): this effect re-runs whenever
+      // one of the callbacks it closes over gets a new identity, which happens
+      // mid-gesture (the first wheel event calls onCameraChange, that updates
+      // page state, and the changed callbacks rebuild this effect). Ending the
+      // gesture there killed the interaction on every event — the camera only
+      // moved because the old code moved it synchronously, inside the wheel
+      // handler. The gesture's own ends are the idle timeout, blur /
+      // visibilitychange, and unmount.
     };
   }, [
     applyTrackpadGesture,
@@ -5361,6 +5348,8 @@ export function SceneCanvas({
     handleOrbitChange,
     handleOrbitEnd,
     handleOrbitStart,
+    orthoSceneRadiusMm,
+    perspectiveFov,
     scheduleTrackpadGestureEnd,
   ]);
 
@@ -5474,15 +5463,20 @@ export function SceneCanvas({
   }, [freezeViewportActive, frozenViewportDataUrl]);
 
   React.useEffect(() => {
-    if (cameraInteractionCycleEnabled && spaceMouseNavigationActive) {
-      window.dispatchEvent(new Event('picking-pan-start'));
+    const navigating = cameraInteractionCycleEnabled && spaceMouseNavigationActive;
+    // Placement previews freeze while navigating, so the trunk router does not run
+    // per frame now that SpaceMouse navigation keeps picking live.
+    setSupportNavigationActive(navigating);
+
+    if (navigating) {
+      // See handleSpaceMouseNavigationFrame: SpaceMouse navigation keeps picking
+      // live, so it signals autosave on its own channel instead of picking-pan-*.
+      window.dispatchEvent(new Event('spacemouse-navigation-start'));
       return;
     }
 
-    window.dispatchEvent(new CustomEvent('picking-pan-end', {
-      detail: { resumeAfterMs: navigationResumeDelayMs },
-    }));
-  }, [cameraInteractionCycleEnabled, navigationResumeDelayMs, spaceMouseNavigationActive]);
+    window.dispatchEvent(new Event('spacemouse-navigation-end'));
+  }, [cameraInteractionCycleEnabled, spaceMouseNavigationActive]);
 
   const {
     thumbnailCaptureActive,
@@ -5538,10 +5532,24 @@ export function SceneCanvas({
     };
   }, [handleOrbitEnd]);
 
+  /**
+   * Take the corner cage away now, rather than waiting for the state to paint.
+   *
+   * A release handler clears the state that gates the cage and then runs the
+   * commit, so React paints the hide only once all of that finishes, which is the
+   * few hundred milliseconds the box used to linger after the pointer let go.
+   */
+  const hideDragCornerCagesNow = React.useCallback(() => {
+    for (const line of Object.values(dragCornerCageRefs.current)) {
+      if (line) line.visible = false;
+    }
+  }, []);
+
   const markGizmoDragEnded = React.useCallback((expectParentTransaction = true) => {
     window.__gizmoDragEndedThisFrame = true;
     suppressNextCanvasClickRef.current = true;
     setIsPostGizmoInteractionGuardActive(true);
+    hideDragCornerCagesNow();
     armSupportDragDeltaBridge({ expectParentTransaction });
 
     if (postGizmoInteractionTimeoutRef.current !== null) {
@@ -5554,7 +5562,7 @@ export function SceneCanvas({
       setIsPostGizmoInteractionGuardActive(false);
       postGizmoInteractionTimeoutRef.current = null;
     }, 160);
-  }, [armSupportDragDeltaBridge]);
+  }, [armSupportDragDeltaBridge, hideDragCornerCagesNow]);
 
   React.useEffect(() => {
     return () => {
@@ -5666,7 +5674,9 @@ export function SceneCanvas({
     selectDragLastPointRef.current = null;
     selectDragStartSnapshotRef.current = null;
     setSelectDragPressed(false);
-  }, []);
+
+    hideDragCornerCagesNow();
+  }, [hideDragCornerCagesNow]);
 
   const getSelectDragWorldPoint = React.useCallback((clientX: number, clientY: number): THREE.Vector3 | null => {
     const plane = selectDragPlaneRef.current;
@@ -5684,14 +5694,10 @@ export function SceneCanvas({
     );
 
     const raycaster = selectDragRaycasterRef.current;
-    raycaster.setFromCamera(ndc, camera);
+    setPickRayFromCamera(raycaster, ndc, camera);
 
-    // Orthographic cameras: same origin push-back GizmoCenter uses so the drag
-    // plane always yields a forward (t>0) intersection (see GizmoCenter).
-    if ('isOrthographicCamera' in camera) {
-      raycaster.ray.origin.addScaledVector(raycaster.ray.direction, -100000);
-    }
-
+    // Starts at the near plane, so the drag plane always yields a forward
+    // (t>0) intersection whatever the camera has dollied past.
     const hit = raycaster.ray.intersectPlane(plane, selectDragIntersectionRef.current);
     return hit ? selectDragIntersectionRef.current.clone() : null;
   }, []);
@@ -5785,9 +5791,12 @@ export function SceneCanvas({
       rotation: live.rotation.clone(),
       scale: live.scale.clone(),
     });
-    requestDragCornerCageUpdate();
+    // Same frame, not the next one. The model moved imperatively just above, and
+    // the deferred update lands a frame later, which reads as the cage's corners
+    // trailing behind a fast drag.
+    updateDragCornerCagesNow();
     last.copy(worldPoint);
-  }, [getSelectDragWorldPoint, queueLiveDragTransform, requestDragCornerCageUpdate]);
+  }, [getSelectDragWorldPoint, queueLiveDragTransform, updateDragCornerCagesNow]);
 
   const finishSelectDrag = React.useCallback(() => {
     const candidate = selectDragCandidateRef.current;
@@ -6032,10 +6041,18 @@ export function SceneCanvas({
         />
         <EnableLocalClipping enabled={clipLower != null || clipUpper != null || indicatorPlaneZ != null || !!organicCutKeyGizmo} />
         <CameraProvider cameraRef={cameraRef} />
-        <CameraProjectionController mode={cameraProjectionMode} perspectiveFov={perspectiveFov} />
+        <CameraProjectionController mode={cameraProjectionMode} perspectiveFov={perspectiveFov} sceneRadius={orthoSceneRadiusMm} />
+        <OrthoFrustumSync
+          mode={cameraProjectionMode}
+          suspended={spaceMouseNavigationActive}
+          sceneRadius={orthoSceneRadiusMm}
+          fovDeg={perspectiveFov}
+        />
         <CameraClipPlaneStabilizer />
+        <OrthoPickRayAlignment />
         {/* GPU Picking Provider - wraps all pickable content when enabled */}
         <PickingProviderWrapper
+          dragActive={isGizmoDragging || isGizmoRetargeting}
           enabled={gpuPickingTest}
           mode={mode}
           transformMode={transformMode}
@@ -6073,7 +6090,7 @@ export function SceneCanvas({
                 const isActive = isCaptureTintModel || model.id === activeModelId;
                 const isSelectedModel = isCaptureTintModel || selectedModelIdSet.has(model.id);
                 const isMarqueeCandidate = isMarqueeSelecting && marqueeCandidateIdSet.has(model.id);
-                const suppressModelInteraction = !modelPickerEnabled || !cameraInteractionCycleEnabled || isGizmoDragging || isPostGizmoInteractionGuardActive || supportGizmoInteractionActive || isOrbitInteracting || isWheelZoomInteracting || spaceMouseNavigationActive;
+                const suppressModelInteraction = !modelPickerEnabled || !cameraInteractionCycleEnabled || isGizmoDragging || isPostGizmoInteractionGuardActive || supportGizmoInteractionActive || isOrbitInteracting || isWheelZoomInteracting;
                 const interactionLodEnabled = (isOrbitInteracting || isWheelZoomInteracting || spaceMouseNavigationActive) && !isActive;
                 const supportNonSelectedOpacity = mode === 'support' && !!activeModelId && !isActive ? 0.5 : undefined;
                 const shouldHideDuplicateSourceModel = Boolean(
@@ -6150,11 +6167,12 @@ export function SceneCanvas({
                       meshRef={meshGroupRefCallback}
                       actualMeshRef={actualMeshRefCallback}
                       materialRoughness={materialRoughness}
+                      bakedAoIntensity={bakedAoIntensity}
                       shaderType={shaderType ?? 'soft_clay'}
                       matcapVariant={matcapVariant}
                       flatUseVertexColors={flatUseVertexColors}
-                      toonSteps={toonSteps}
                       xrayOpacity={xrayOpacity}
+                      bakedAoVersion={model.bakedAoVersion}
                       heatmapMinAngle={heatmapMinAngle}
                       heatmapMaxAngle={heatmapMaxAngle}
                       heatmapColors={heatmapColors ?? emptyHeatmapColors}
@@ -6183,9 +6201,6 @@ export function SceneCanvas({
                         )
                       }
                       isMarqueeCandidate={isMarqueeCandidate}
-                      isBranchPlacementActive={isBranchPlacementActive}
-                      isLeafPlacementActive={isLeafPlacementActive}
-                      isBracePlacementActive={isBracePlacementActive}
                       onModelHoverPointChange={onModelHoverPointChange}
                       onModelHoverModelChange={onModelHoverModelChange}
                       hoverTintColor={modelHoverTintColor}
@@ -6198,7 +6213,7 @@ export function SceneCanvas({
                       outOfBoundsMin={shaderOutOfBoundsBounds?.min ?? null}
                       outOfBoundsMax={shaderOutOfBoundsBounds?.max ?? null}
                       outOfBoundsStripeColor={outOfBoundsStripeColor}
-                      supportPlacementGuidePlaneZ={!thumbnailCaptureActive && isActive ? supportPlacementIndicatorPlaneZ : null}
+                      supportPlacementGuideEnabled={!thumbnailCaptureActive && isActive && supportPlacementGuideEnabled}
                       supportPlacementGuideColor="#baf72e"
                       supportPlacementGuideLineWidthMm={supportPlacementGuideLineWidthMm}
                       supportPlacementGuideOpacity={0.62}
@@ -6224,6 +6239,7 @@ export function SceneCanvas({
                           renderOrder={100000}
                         >
                           <ModelAttachedSupportLayer
+                            plateClearanceTargets={plateClearanceTargets}
                             mode={mode}
                             modelFilterId={model.id}
                             hideRaftPrimitives={hideRaftPrimitives}
@@ -6258,25 +6274,18 @@ export function SceneCanvas({
                         </group>
                       )}
 
-                      {isActive && (mode === 'support' || mode === 'analysis') && islandMarkers && islandMarkers.length > 0 && (
-                        <IslandSurfaceDotsOverlay
-                          geometry={model.geometry.geometry}
-                          islandMarkers={islandMarkers}
-                          scanBBox={scanBBox || null}
-                          selectedIslandId={overlaySelectedIslandId}
-                          clipLower={clipLower}
-                          clipUpper={clipUpper}
-                          opacity={overlayOpacity ?? 0.9}
-                          transform={transformToUse}
-                        />
-                      )}
-
                       {isActive && (mode === 'support' || mode === 'analysis') && showOverhangs && overhangIslands && overhangIslands.length > 0 && (
                         <IslandOverhangOverlay
                           geometry={model.geometry.geometry}
                           regions={overhangIslands}
+                          toppleCoverage={toppleCoverage !== false}
+                          dragTotalMm3={dragTotalMm3}
                         />
                       )}
+                      <SupportBlockerOverlay
+                        geometry={model.geometry.geometry}
+                        modelId={model.id}
+                      />
                     </StlMesh>
                   </React.Fragment>
                 );
@@ -6307,6 +6316,7 @@ export function SceneCanvas({
                       raycast={() => null}
                     >
                       <ModelAttachedSupportLayer
+                        plateClearanceTargets={plateClearanceTargets}
                         mode={mode}
                         navigationLodActive
                         hideRaftPrimitives={hideRaftPrimitives}
@@ -6390,6 +6400,7 @@ export function SceneCanvas({
                       raycast={() => null}
                     >
                       <ModelAttachedSupportLayer
+                        plateClearanceTargets={plateClearanceTargets}
                         mode={mode}
                         navigationLodActive
                         hideRaftPrimitives={hideRaftPrimitives}
@@ -6427,6 +6438,7 @@ export function SceneCanvas({
                       raycast={() => null}
                     >
                       <ModelAttachedSupportLayer
+                        plateClearanceTargets={plateClearanceTargets}
                         mode={mode}
                         navigationLodActive
                         hideRaftPrimitives={hideRaftPrimitives}
@@ -6542,6 +6554,7 @@ export function SceneCanvas({
               <group ref={supportDragGroupRef ?? undefined} renderOrder={100000}>
               {!useActiveModelAttachedSupportProxy && (
                 <ModelAttachedSupportLayer
+                  plateClearanceTargets={plateClearanceTargets}
                   mode={mode}
                   excludeModelId={duplicateSourceSupportPreviewModelId}
                   excludeModelIds={supportBaseExcludeModelIds}
@@ -6571,11 +6584,7 @@ export function SceneCanvas({
                   outOfBoundsMin={shaderOutOfBoundsBounds?.min ?? null}
                   outOfBoundsMax={shaderOutOfBoundsBounds?.max ?? null}
                   outOfBoundsStripeColor={outOfBoundsStripeColor}
-                  trunkPlacementPreview={trunkPlacementPreviewForRenderer}
-                  branchPlacementPreview={branchPlacementPreviewForRenderer}
-                  leafPlacementPreview={leafPlacementPreviewForRenderer}
-                  bracePlacementPreview={bracePlacementPreviewForRenderer}
-                  kickstandPlacementPreview={kickstandPlacementPreviewForRenderer}
+                  placementPreviews={gatedPlacementPreviews}
                   interiorView={interiorView}
                   cavityGeometryByModelId={cavityGeometryByModelId}
                   modelWorldInverseById={modelWorldInverseById}
@@ -6590,6 +6599,8 @@ export function SceneCanvas({
                   liveTransformsRef={crossSectionLiveTransformsRef}
                   sourceObject={supportDragGroupRef?.current ?? null}
                   sourceObjectVersion={clipUpper != null ? crossSectionStencilSourceVersion : undefined}
+                  extraSources={[activeGroupRef.current]}
+                  extraSourcesKey={activeModelId}
                   // During slider scrubbing, avoid expensive source z-bound
                   // traversal/bucketing work. Stencil clipping still constrains
                   // fragments correctly, so this is a safe CPU optimization.
@@ -6616,6 +6627,8 @@ export function SceneCanvas({
                   liveTransformsRef={crossSectionLiveTransformsRef}
                   sourceObject={supportDragGroupRef?.current ?? null}
                   sourceObjectVersion={crossSectionStencilSourceVersion}
+                  extraSources={[activeGroupRef.current]}
+                  extraSourcesKey={activeModelId}
                   skipSourceZBounds={isLayerScrubbing}
                   y={clipLower}
                   otherClipY={clipUpper}
@@ -6668,6 +6681,7 @@ export function SceneCanvas({
               {useActiveModelAttachedSupportProxy && activeModelId && (
                 <group renderOrder={100000}>
                 <ModelAttachedSupportLayer
+                  plateClearanceTargets={plateClearanceTargets}
                   mode={mode}
                   excludeModelId={activeModelId}
                   excludeModelIds={supportProxyExcludeModelIds}
@@ -6712,6 +6726,7 @@ export function SceneCanvas({
                       raycast={() => null}
                     >
                       <ModelAttachedSupportLayer
+                        plateClearanceTargets={plateClearanceTargets}
                         mode={mode}
                         navigationLodActive={navigationLodActive}
                         hideRaftPrimitives={hideRaftPrimitives}
@@ -6798,7 +6813,10 @@ export function SceneCanvas({
                           rotation: correctedLive.rotation.clone(),
                           scale: correctedLive.scale.clone(),
                         });
-                        requestDragCornerCageUpdate();
+                        // Same frame as the imperative move above, as the select
+                        // drag does: a deferred update lands a frame later and the
+                        // corners trail behind a fast drag.
+                        updateDragCornerCagesNow();
                       }
                     }
                   }}
@@ -7134,7 +7152,10 @@ export function SceneCanvas({
                           rotation: correctedLive.rotation.clone(),
                           scale: correctedLive.scale.clone(),
                         });
-                        requestDragCornerCageUpdate();
+                        // Same frame as the imperative move above, as the select
+                        // drag does: a deferred update lands a frame later and the
+                        // corners trail behind a fast drag.
+                        updateDragCornerCagesNow();
                       }
                     }
                   }}
@@ -7234,6 +7255,20 @@ export function SceneCanvas({
                 />
               )}
 
+              {/* Island contact footprints. The instance positions are world-space
+                  (the frame the detectors emit), so this must stay OUTSIDE the
+                  model group — mounting it inside would apply the model
+                  transform twice. */}
+              {islandInstances && islandInstances.count > 0 && (mode === 'support' || mode === 'analysis') && (
+                <IslandInstancesOverlay
+                  instances={islandInstances}
+                  selectedIslandId={overlaySelectedIslandId}
+                  clipLower={clipLower}
+                  clipUpper={clipUpper}
+                  opacity={overlayOpacity ?? 0.9}
+                />
+              )}
+
               <IslandVoxelVisualization
                 scanResults={scanResults ?? null}
                 layerHeightMm={layerHeightMm ?? 0.05}
@@ -7247,15 +7282,6 @@ export function SceneCanvas({
                 zOffset={scanBBox?.min.z ?? 0}
                 clipLower={clipLower}
                 clipUpper={clipUpper}
-              />
-
-              <IslandExpansionVisualization simulator={expansionSimulator ?? null} transform={transform} enabled={showExpansion ?? false} />
-
-              <MeshClassificationRenderer
-                geometry={classificationGeometry}
-                faceLabels={classificationFaceLabels}
-                transform={transform}
-                visible={showClassification ?? false}
               />
 
               {scanResults && (
@@ -7285,7 +7311,7 @@ export function SceneCanvas({
 
               {/* Render Branch Tip Marker - only show when NO preview is visible */}
               {/* Once preview shows, the contact cone at the tip replaces this marker */}
-              {isBranchPlacementActive && branchTipPosition && !branchPlacementPreview && !suppressSupportPlacementPreviewRendering && (
+              {isPlacementActiveForType(placementActive, BRANCH_FAMILY_PLACEMENT_OWNER) && branchTipPosition && !isPlacementPreviewForType(placementPreviews, BRANCH_FAMILY_PLACEMENT_OWNER) && !suppressSupportPlacementPreviewRendering && (
                 <mesh position={[branchTipPosition.x, branchTipPosition.y, branchTipPosition.z]} raycast={() => null}>
                   <sphereGeometry args={[DEFAULT_TIP_CONTACT_DIAMETER_MM / 2 * 0.5, 12, 12]} />
                   <meshStandardMaterial color="#00ff00" transparent opacity={0.7} />
@@ -7294,7 +7320,7 @@ export function SceneCanvas({
 
               {/* Render Leaf Hover Preview Dot - shows when Alt+Shift is held before first click */}
               {/* Uses tip contact diameter to match actual tip size */}
-              {leafHoverPosition && !leafTipPosition && !leafPlacementPreview && !suppressSupportPlacementPreviewRendering && (
+              {leafHoverPosition && !leafTipPosition && !isPlacementPreviewForType(placementPreviews, LEAF_PLACEMENT_OWNER) && !suppressSupportPlacementPreviewRendering && (
                 <mesh position={[leafHoverPosition.x, leafHoverPosition.y, leafHoverPosition.z]} raycast={() => null}>
                   <sphereGeometry args={[DEFAULT_TIP_CONTACT_DIAMETER_MM / 2 * 0.5, 12, 12]} />
                   <meshStandardMaterial
@@ -7309,7 +7335,7 @@ export function SceneCanvas({
 
               {/* Render Leaf Tip Marker - only show when NO preview is visible */}
               {/* Once preview shows, the contact cone at the tip replaces this marker */}
-              {isLeafPlacementActive && leafTipPosition && !leafPlacementPreview && !suppressSupportPlacementPreviewRendering && (
+              {isPlacementActiveForType(placementActive, LEAF_PLACEMENT_OWNER) && leafTipPosition && !isPlacementPreviewForType(placementPreviews, LEAF_PLACEMENT_OWNER) && !suppressSupportPlacementPreviewRendering && (
                 <mesh position={[leafTipPosition.x, leafTipPosition.y, leafTipPosition.z]} raycast={() => null}>
                   <sphereGeometry args={[DEFAULT_TIP_CONTACT_DIAMETER_MM / 2 * 0.5, 12, 12]} />
                   <meshStandardMaterial color="#00ff00" transparent opacity={0.7} />
@@ -7321,19 +7347,20 @@ export function SceneCanvas({
                 <JointPlacementPreview position={jointPlacementPreview.pos} diameter={jointPlacementPreview.diameter} />
               )}
 
-              {/* Branch Placement Controller - handles snapping logic */}
-              {mode === 'support' && <BranchPlacementController />}
+              {/* Each type's placement controller: snapping, hover preview, click placement. */}
+              {mode === 'support' && PLACEMENT_CONTROLLER_TYPES.map((typeId) => {
+                const Controller = PLACEMENT_CONTROLLERS[typeId]!;
+                return <Controller key={typeId} activeModelId={activeModelId} />;
+              })}
 
-              {/* Leaf Placement Controller - handles snapping logic */}
-              {mode === 'support' && <LeafPlacementController activeModelId={activeModelId} />}
-
-              {/* Brace Placement Controller - handles snapping logic */}
-              {mode === 'support' && <BracePlacementController />}
-
-              {/* Kickstand Placement Controller - handles Ctrl-hover preview and click placement */}
-              {mode === 'support' && <KickstandPlacementController />}
-
-              {renderSceneOverlays?.({ raycastActiveModelFromRay })}
+              {renderSceneOverlays?.({
+                raycastActiveModelFromRay,
+                // The post-gesture guard is part of the gesture for this purpose:
+                // the commit that recomputes the overlays runs inside it, so
+                // standing down only while the pointer is down would flash them
+                // back at their pre-commit positions.
+                isDragging: isGizmoDragging || isPostGizmoInteractionGuardActive,
+              })}
 
             </React.Suspense>
           </SelectionProvider>
@@ -7360,9 +7387,12 @@ export function SceneCanvas({
           screenSpacePanning
           zoomToCursor
           enablePan
+          // Orthographic wheel is a real dolly handled in onTrackpadWheel; letting
+          // OrbitControls also zoom would fight the derived frustum.
+          enableZoom={cameraProjectionMode === 'perspective'}
           enabled={
             cameraInteractionCycleEnabled
-            && !(mode === 'prepare' && transformMode === 'smoothing' && smoothingBrushState.isStrokeActive)
+            && !((mode === 'prepare' || mode === 'support') && transformMode === 'supportBlockers' && blockerStrokeActive)
             && !isGizmoDragging
             && !isMarqueeSelecting
             && !isPlacementActive
@@ -7378,6 +7408,8 @@ export function SceneCanvas({
           <ZUpGizmoHelper
             alignment="bottom-right"
             margin={mode === 'printing' ? [72, 72] : [nonPrintingViewCubeRightMargin, 72]}
+            accentColor={gizmoColors.accent}
+            onHome={resetCameraHome}
           >
             <ZUpGizmoViewcube
               font="600 24px Inter, system-ui, sans-serif"
@@ -7395,6 +7427,8 @@ export function SceneCanvas({
           <NativeSpaceMouseController
             pivotPoint={selectedSpaceMousePivotPoint}
             fallbackPivot={buildVolumeCenterTarget}
+            sceneRadius={orthoSceneRadiusMm}
+            fovDeg={perspectiveFov}
             onNavigationActiveChange={setSpaceMouseNavigationActive}
             onNavigationFrame={handleSpaceMouseNavigationFrame}
           />
@@ -7404,7 +7438,8 @@ export function SceneCanvas({
             pivotPoint={selectedSpaceMousePivotPoint}
             pivotCandidates={spaceMousePivotCandidates}
             fallbackPivot={buildVolumeCenterTarget}
-            mouseOrbitDragRunId={mouseOrbitDragRunId}
+            sceneRadius={orthoSceneRadiusMm}
+            fovDeg={perspectiveFov}
             onNavigationActiveChange={setSpaceMouseNavigationActive}
             onNavigationFrame={handleSpaceMouseNavigationFrame}
             onNewDeviceDetected={onNewDeviceDetected}
@@ -7421,6 +7456,7 @@ export function SceneCanvas({
             orbitTarget={orbitTarget}
             cameraRef={cameraRef}
             orbitControlsRef={orbitControlsRef as React.MutableRefObject<{ target: THREE.Vector3; update: () => void } | null>}
+            perspectiveFov={perspectiveFov}
           />
         )}
         <CameraIntroController
@@ -7430,12 +7466,12 @@ export function SceneCanvas({
           mode={mode}
           plateWidthMm={activeBuildVolumeSettings.widthMm}
           plateDepthMm={activeBuildVolumeSettings.depthMm}
+          perspectiveFov={perspectiveFov}
         />
         <CameraHomeResetController
           runId={cameraHomeResetRunId}
           homePosition={defaultCamera.position}
           homeTarget={[buildVolumeCenterTarget.x, buildVolumeCenterTarget.y, buildVolumeCenterTarget.z]}
-          homeFovDeg={defaultCamera.fov}
           onComplete={setCameraHomeResetCompletedRunId}
         />
         <CameraModeEntryFramingController
@@ -7444,6 +7480,13 @@ export function SceneCanvas({
           target={buildVolumeCenterTarget}
           plateWidthMm={activeBuildVolumeSettings.widthMm}
           plateDepthMm={activeBuildVolumeSettings.depthMm}
+          perspectiveFov={perspectiveFov}
+        />
+        <HorizonLock enabled={cameraInteractionCycleEnabled} />
+        <TrackpadGesturePoseApplier
+          poseRef={trackpadPoseRef}
+          lastEventAtRef={trackpadPoseLastEventAtRef}
+          tauMs={cameraTrackpadPoseTauMs}
         />
         <CameraControlsRecovery />
         <CameraFocusController selectedIslandId={overlaySelectedIslandId ?? null} islandMarkers={islandMarkers ?? []} onClearSelection={onClearSelection} />
@@ -7525,23 +7568,14 @@ export function SceneCanvas({
 
       {supportHelpEnabled && (
         <SupportLimitationFeedback
-          error={suppressSupportPlacementPreviewRendering || supportPathfindingDebugState.enabled ? null : (leafPlacementPreview?.error ?? (isBranchPlacementActive ? branchPlacementPreview?.error : null) ?? trunkPlacementPreview?.error ?? null)}
-          warning={
-            suppressSupportPlacementPreviewRendering || supportPathfindingDebugState.enabled
-              ? null
-              : (
-                leafPlacementPreview?.warning ??
-                (isBranchPlacementActive ? branchPlacementPreview?.warning : null) ??
-                trunkPlacementPreview?.warning ??
-                interactionWarning ??
-                null
-              )
-          }
+          error={placementLimitation.error}
+          warning={placementLimitation.warning ?? interactionWarning ?? null}
         />
       )}
 
       {/* GPU Picking Debug Overlay - shows what's under cursor */}
       {gpuPickingTest && <PickingDebugOverlay position="top-right" />}
+
 
       {showCrossSectionCapDebugPanel && (
         <div

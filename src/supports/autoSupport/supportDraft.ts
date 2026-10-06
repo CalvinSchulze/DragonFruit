@@ -1,4 +1,5 @@
-import type { SupportState, Roots, Trunk, Knot, Branch, Leaf, Anchor, Stick, Twig } from '../types';
+import { getSupportTypeDescriptor, type PlacementPrimitives, type SupportEntityFor, type SupportTypeId } from '../supportTypeRegistry';
+import type { Knot, Roots, SupportState } from '../types';
 
 /**
  * Immutable draft mutations for the auto-support PLAN phase.
@@ -6,42 +7,65 @@ import type { SupportState, Roots, Trunk, Knot, Branch, Leaf, Anchor, Stick, Twi
  * The auto pipeline must compute the whole placement against a LOCAL draft
  * state (no store commits, no notify()) so the run is one atomic commit and
  * the computation can later move into a worker. These mirror the entity-add
- * arms of the store's `addRoot`/`addTrunk`/… functions (state.ts), minus the
- * settings-code-hex cache and the `notify()` side effects.
+ * arm of the store's `addSupportEntity` (state.ts), minus the settings-code-hex
+ * cache and the `notify()` side effects.
  *
- * The placement phase only ever ADDS entities (the one replacement case uses
- * `applyTrunkReplacement` via a store swap), so these eight covers all
- * mutations the plan phase needs.
+ * The placement phase only ever ADDS entities, so these two cover every
+ * mutation the plan phase needs.
  */
 
-export function draftAddRoot(draft: SupportState, root: Roots): SupportState {
-    return { ...draft, roots: { ...draft.roots, [root.id]: root } };
+/**
+ * Add one support entity to a draft, stamped with its type.
+ *
+ * The plan phase commits with a single `setSnapshot`, so an entity entering
+ * the draft unstamped reaches the store unstamped.
+ */
+export function draftAddEntity(
+    draft: SupportState,
+    typeId: SupportTypeId,
+    entity: { id: string },
+): SupportState {
+    const key = getSupportTypeDescriptor(typeId).location.key;
+    return {
+        ...draft,
+        [key]: { ...draft[key], [entity.id]: { ...entity, typeId } },
+    };
 }
 
-export function draftAddTrunk(draft: SupportState, trunk: Trunk): SupportState {
-    return { ...draft, trunks: { ...draft.trunks, [trunk.id]: trunk } };
+/** Primitives are not support types and carry no `typeId`. */
+export function draftAddPrimitive<K extends 'roots' | 'knots'>(
+    draft: SupportState,
+    key: K,
+    primitive: { id: string },
+): SupportState {
+    return { ...draft, [key]: { ...draft[key], [primitive.id]: primitive } };
 }
 
-export function draftAddKnot(draft: SupportState, knot: Knot): SupportState {
-    return { ...draft, knots: { ...draft.knots, [knot.id]: knot } };
-}
-
-export function draftAddBranch(draft: SupportState, branch: Branch): SupportState {
-    return { ...draft, branches: { ...draft.branches, [branch.id]: branch } };
-}
-
-export function draftAddLeaf(draft: SupportState, leaf: Leaf): SupportState {
-    return { ...draft, leaves: { ...draft.leaves, [leaf.id]: leaf } };
-}
-
-export function draftAddAnchor(draft: SupportState, anchor: Anchor): SupportState {
-    return { ...draft, anchors: { ...draft.anchors, [anchor.id]: anchor } };
-}
-
-export function draftAddStick(draft: SupportState, stick: Stick): SupportState {
-    return { ...draft, sticks: { ...draft.sticks, [stick.id]: stick } };
-}
-
-export function draftAddTwig(draft: SupportState, twig: Twig): SupportState {
-    return { ...draft, twigs: { ...draft.twigs, [twig.id]: twig } };
+/**
+ * Commit one placed support: the entity plus every primitive its declared
+ * `edges` point at.
+ *
+ * `location.key` is the collection the entity joins, and each `edges` entry
+ * names a field holding a primitive's id and the collection it lives in.
+ * `supplied` is keyed by edge field, matching the declaration.
+ */
+export function draftCommitSupport(
+    draft: SupportState,
+    typeId: SupportTypeId,
+    entity: SupportEntityFor<typeof typeId>,
+    supplied: PlacementPrimitives = {},
+): SupportState {
+    let next = draftAddEntity(draft, typeId, entity);
+    for (const edge of getSupportTypeDescriptor(typeId).edges) {
+        // A `segment` edge names part of the entity, not a collection member.
+        // Only roots and knots are collections a placement can carry in.
+        if (edge.to !== 'roots' && edge.to !== 'knots') continue;
+        const primitive = supplied[edge.field];
+        if (!primitive) continue;
+        // The declared edge says which collection this belongs to. The cast is
+        // unavoidable: a value keyed by edge field cannot carry its collection.
+        if (edge.to === 'roots') next = draftAddPrimitive(next, 'roots', primitive as Roots);
+        else next = draftAddPrimitive(next, 'knots', primitive as Knot);
+    }
+    return next;
 }

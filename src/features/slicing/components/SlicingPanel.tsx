@@ -5,12 +5,13 @@ import { Trans } from '@lingui/react/macro';
 import type { MessageDescriptor } from '@lingui/core';
 import { useEscapeToClose } from '@/hotkeys/useEscapeToClose';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ChevronDown, CircleHelp, Cpu, Download, Edit3, ExternalLink, Layers3, Loader2, Play, Printer, Timer, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, CircleHelp, Cpu, Download, Edit3, ExternalLink, Layers3, Play, Printer, Timer, X } from 'lucide-react';
 import { MouseTooltip } from '@/components/ui/MouseTooltip';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
 import { KNOWN_SOURCE_EXTENSION_STRIP_RE } from '@/features/plugins/pluginFileTypeExtensions';
 import { Button, Card, CardHeader, IconButton } from '@/components/atoms';
 import { ScrollableNumberField } from '@/components/ui/scrollableNumberField';
+import { StructuredDialogModal } from '@/components/ui/StructuredDialogModal';
 import { useFloatingPanelCollapse } from '@/components/layout/FloatingPanelStack';
 import { openProfileSettingsModal } from '@/components/settings/profileModalEvents';
 import { MaterialAntiAliasingSection, type MaterialDraft } from '@/components/settings/profileFormAtoms';
@@ -29,13 +30,13 @@ import {
   getPrinterReachabilitySnapshot,
   subscribeToPrinterReachability,
 } from '@/features/network/printerReachabilityStore';
-import { getProfileLocalMaterialSettingsAdapter, getProfileNetworkUiAdapter } from '@/features/plugins/pluginRegistry';
+import { getProfileNetworkUiAdapter } from '@/features/plugins/pluginRegistry';
 import {
   runSliceExportOrchestrator,
   type SliceExportArtifact,
   type SliceExportResult,
 } from '@/features/slicing/sliceExportOrchestrator';
-import { resolveOutputSettingsMode, resolveSlicingFormatDefinition } from '@/features/slicing/formats/registry';
+import { resolveSlicingFormatDefinition } from '@/features/slicing/formats/registry';
 import { pluginNetworkFetch } from '@/utils/pluginNetworkBridge';
 import { resolveCompositeMaterialLabel } from '@/utils/materialLabel';
 import {
@@ -47,15 +48,18 @@ import {
   resolveUvToolsExecutablePath,
 } from '@/components/settings/uvToolsPreferences';
 import { cleanupStalePrintTempArtifacts, cleanupAllPrintTempArtifacts, getSlicerEngineVersion } from '@/features/slicing/tauri/nativeSlicerBridge';
-import { computePhysicalAaConfig, type AaPreset as AaAutoPreset } from '@/features/slicing/autoAaPhysics';
+import type { AaPreset as AaAutoPreset } from '@/features/slicing/autoAaPhysics';
+import {
+  clampBlurSigma,
+  formatAaLevel,
+  parseAaLevelSteps,
+  resolveSliceAntiAliasing,
+} from '@/features/slicing/sliceAntiAliasing';
 import { AaSupportWarningModal } from '@/components/modals/AaSupportWarningModal';
 import {
   LutCurveSelector,
   LutCurveEditorModal,
-  sampleCurveToLut,
   DEFAULT_CUSTOM_CURVE,
-  DEFAULT_CLEAR_EXP_100_CURVE,
-  DEFAULT_OPAQUE_EXP_120_230_CURVE,
   DEFAULT_SAVED_CURVES,
   type CurvePoint,
   type SavedCurve,
@@ -66,6 +70,7 @@ export type SliceIntent = 'file' | 'upload' | 'print' | 'preview' | 'uvtools';
 
 interface SlicingPanelProps {
   models: LoadedModel[];
+  excludedModelIds?: readonly string[];
   activeModel: LoadedModel | null;
   estimatedLayerCountOverride?: number | null;
   estimatedLayerHeightMmOverride?: number | null;
@@ -531,31 +536,12 @@ function resolveInitialAaMode(): 'Off' | 'Blur' | '3DAA' {
 type AaStrengthLevel = `${number}x`;
 type BlurKernelMode = 'box' | 'gaussian';
 
-function parseAaLevelSteps(level: string | null | undefined): number | null {
-  const trimmed = (level ?? '').trim().toLowerCase();
-  if (!trimmed.endsWith('x')) return null;
-  const parsed = Number(trimmed.slice(0, -1));
-  if (!Number.isFinite(parsed)) return null;
-  return Math.round(parsed);
-}
-
-function clampAaLevelSteps(value: number): number {
-  const next = Number.isFinite(value) ? value : 4;
-  return Math.max(AA_STRENGTH_MIN_STEPS, Math.min(AA_STRENGTH_MAX_STEPS, Math.round(next)));
-}
-
 function resolveInitialBlurKernel(storageKey: string, fallback: BlurKernelMode): BlurKernelMode {
   if (typeof window === 'undefined') return fallback;
 
   const stored = window.localStorage.getItem(storageKey)
     ?? window.sessionStorage.getItem(storageKey);
   return stored === 'gaussian' ? 'gaussian' : 'box';
-}
-
-function clampBlurSigma(value: number, fallback: number): number {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.max(0.05, Math.min(16, Math.round(numeric * 100) / 100));
 }
 
 function resolveInitialBlurSigma(storageKey: string, fallback: number, legacyStorageKey?: string): number {
@@ -582,10 +568,6 @@ function resolveInitialBlurSigma(storageKey: string, fallback: number, legacySto
   }
 
   return fallback;
-}
-
-function formatAaLevel(steps: number): AaStrengthLevel {
-  return `${clampAaLevelSteps(steps)}x` as AaStrengthLevel;
 }
 
 function resolveInitialAaLevel(): AaStrengthLevel {
@@ -689,12 +671,6 @@ function resolveInitialZaaDuplicateZ(): boolean {
   return stored === 'true';
 }
 
-/** Max-alpha (%) for the cure-window LUT keyed by material transparency. */
-const Z_BLEND_MAX_ALPHA_BY_RESIN = {
-  opaque: 90,
-  clear: 65,
-} as const;
-
 function resolveInitialZBlendResinType(): 'opaque' | 'clear' | 'custom' {
   if (typeof window === 'undefined') return 'opaque';
   const stored = window.localStorage.getItem(SLICING_3DAA_RESIN_TYPE_STORAGE_KEY)
@@ -734,34 +710,6 @@ function resolveInitialAaQualityMode(): 'auto' | 'expert' {
 
 type AaAutoUiPreset = 'raw' | AaAutoPreset;
 
-type AutoAaResolvedConfig = {
-  aaMode: 'Off' | 'Blur' | '3DAA';
-  antiAliasingMode: 'Coverage' | 'Blur' | 'Vertical2';
-  aaSteps: number;
-  blurBrushRadiusPx: number;
-  zBlurRadiusLayers: number;
-  zBlendLookBack: number;
-};
-
-const DEFAULT_AUTO_Z_BLEND_LOOK_BACK = 2;
-
-const PENDING_AUTO_AA_CONFIG: AutoAaResolvedConfig = {
-  aaMode: 'Blur',
-  antiAliasingMode: 'Blur',
-  aaSteps: 4,
-  blurBrushRadiusPx: 1,
-  zBlurRadiusLayers: 0,
-  zBlendLookBack: DEFAULT_AUTO_Z_BLEND_LOOK_BACK,
-};
-
-const DEFAULT_AUTO_AA_CONFIG: AutoAaResolvedConfig = {
-  aaMode: 'Blur',
-  antiAliasingMode: 'Blur',
-  aaSteps: 4,
-  blurBrushRadiusPx: 1,
-  zBlurRadiusLayers: 0,
-  zBlendLookBack: DEFAULT_AUTO_Z_BLEND_LOOK_BACK,
-};
 
 function resolveInitialAaAutoPreset(): AaAutoUiPreset {
   if (typeof window === 'undefined') return 'balanced';
@@ -787,6 +735,7 @@ const AUTO_AA_PRESET_OPTIONS: ReadonlyArray<{
 
 export function SlicingPanel({
   models,
+  excludedModelIds = [],
   activeModel,
   estimatedLayerCountOverride,
   estimatedLayerHeightMmOverride,
@@ -840,6 +789,8 @@ export function SlicingPanel({
   const [showAaWarningModal, setShowAaWarningModal] = useState(false);
   const [pendingAaTarget, setPendingAaTarget] = useState<'Off' | 'Blur' | '3DAA' | null>(null);
   const [aaWarningModelName, setAaWarningModelName] = useState('');
+  const [showOutOfBoundsWarningModal, setShowOutOfBoundsWarningModal] = useState(false);
+  const outOfBoundsWarningResolveRef = useRef<((proceed: boolean) => void) | null>(null);
   const [aaLevel, setAaLevel] = useState<AaStrengthLevel>(resolveInitialAaLevel);
   const [useCustomAaLevel, setUseCustomAaLevel] = useState<boolean>(() => {
     const initialSteps = parseAaLevelSteps(resolveInitialAaLevel()) ?? 4;
@@ -905,9 +856,6 @@ export function SlicingPanel({
   const [showAaOnSupports, setShowAaOnSupports] = useState(false);       // item 7: default closed
   const [aaQualityMode, setAaQualityMode] = useState<'auto' | 'expert'>(resolveInitialAaQualityMode);
   const [aaAutoPreset, setAaAutoPreset] = useState<AaAutoUiPreset>(resolveInitialAaAutoPreset);
-  const [autoAaConfig, setAutoAaConfig] = useState<AutoAaResolvedConfig>(DEFAULT_AUTO_AA_CONFIG);
-  const [autoZBlendLookBack, setAutoZBlendLookBack] = useState<number>(DEFAULT_AUTO_Z_BLEND_LOOK_BACK);
-  const [isAutoAaCalculating, setIsAutoAaCalculating] = useState(false);
   const [materialAaEditorDraft, setMaterialAaEditorDraft] = useState<MaterialDraft | null>(null);
   const [isMaterialAaEditorOpen, setIsMaterialAaEditorOpen] = useState(false);
   const [sessionAaOverrideDraft, setSessionAaOverrideDraft] = useState<MaterialDraft | null>(null);
@@ -980,9 +928,7 @@ export function SlicingPanel({
     ...(activeMaterialProfile?.antiAliasingSettings ?? {}),
     ...(sessionAaOverrideDraft?.antiAliasingSettings ?? {}),
   }), [activeMaterialProfile?.antiAliasingSettings, sessionAaOverrideDraft?.antiAliasingSettings]);
-  const aaOnSupportsEnabled = profileAntiAliasingSettings.enableOverride === true
-    ? profileAntiAliasingSettings.aaOnSupports
-    : getSavedSlicingPerformanceSettings().aaOnSupportsExperimental === true;
+  const aaOnSupportsEnabled = profileAntiAliasingSettings.aaOnSupports === true;
   const effectiveMaterialProfile = useMemo(() => {
     if (!activeMaterialProfile) return null;
     if (!activePrinterProfile) return activeMaterialProfile;
@@ -1095,16 +1041,6 @@ export function SlicingPanel({
     setIsSessionAaOverrideOpen(true);
   }, [activeMaterialProfile, sessionAaOverrideDraft]);
 
-  const opaqueDefaultLut = useMemo(
-    () => sampleCurveToLut(DEFAULT_OPAQUE_EXP_120_230_CURVE),
-    [],
-  );
-
-  const clearDefaultLut = useMemo(
-    () => sampleCurveToLut(DEFAULT_CLEAR_EXP_100_CURVE),
-    [],
-  );
-
   useEffect(() => {
     if (savedCurves.length === 0) {
       const fallback: SavedCurve = {
@@ -1183,10 +1119,22 @@ export function SlicingPanel({
     if (Math.round(printerBitDepth) >= 8) return null;
     return Math.max(2, Math.min(7, Math.round(printerBitDepth)));
   }, [activePrinterProfile?.bitDepth?.bits]);
-  const autoDitherRequiredForPrinter = printerDitherBitDepth != null && printerDitherBitDepth !== 8;
+  // Raw declared depth, kept separate from the clamped dither depth above so the
+  // UI can tell "8-bit or deeper panel" apart from "printer declares nothing".
+  const printerPanelBitDepth = useMemo<number | null>(() => {
+    const printerBitDepth = Number(activePrinterProfile?.bitDepth?.bits);
+    if (!Number.isFinite(printerBitDepth) || printerBitDepth <= 0) return null;
+    return Math.round(printerBitDepth);
+  }, [activePrinterProfile?.bitDepth?.bits]);
+  const autoDitherRequiredForPrinter = printerDitherBitDepth != null;
+  // An 8-bit (or deeper) panel emits every grayscale level on its own, so
+  // dithering there can only quantize the layer below the panel's resolution.
+  const ditherForcedOffForPrinter = printerPanelBitDepth != null && printerPanelBitDepth >= 8;
   const effectiveDitherEnabledForSlice = autoDitherRequiredForPrinter
     ? true
-    : profileAntiAliasingSettings.ditherEnabled;
+    : ditherForcedOffForPrinter
+      ? false
+      : profileAntiAliasingSettings.ditherEnabled;
   const effectiveDitherBitDepthForSlice = printerDitherBitDepth
     ?? Math.max(2, Math.min(7, Math.round(profileAntiAliasingSettings.ditherBitDepth ?? 3)));
   const effectiveDitherDeviceGammaForSlice = Math.max(
@@ -1276,7 +1224,30 @@ export function SlicingPanel({
     setPendingAaTarget(null);
   }, []);
 
-  const visibleModels = useMemo(() => models.filter((model) => model.visible), [models]);
+  const excludedModelIdSet = useMemo(() => new Set(excludedModelIds), [excludedModelIds]);
+  const visibleModels = useMemo(
+    () => models.filter((model) => model.visible && !excludedModelIdSet.has(model.id)),
+    [excludedModelIdSet, models],
+  );
+  const excludedVisibleModelCount = useMemo(
+    () => models.filter((model) => model.visible && excludedModelIdSet.has(model.id)).length,
+    [excludedModelIdSet, models],
+  );
+  const requestOutOfBoundsSliceConfirmation = useCallback(() => new Promise<boolean>((resolve) => {
+    outOfBoundsWarningResolveRef.current?.(false);
+    outOfBoundsWarningResolveRef.current = resolve;
+    setShowOutOfBoundsWarningModal(true);
+  }), []);
+  const settleOutOfBoundsSliceConfirmation = useCallback((proceed: boolean) => {
+    const resolve = outOfBoundsWarningResolveRef.current;
+    outOfBoundsWarningResolveRef.current = null;
+    setShowOutOfBoundsWarningModal(false);
+    resolve?.(proceed);
+  }, []);
+  useEffect(() => () => {
+    outOfBoundsWarningResolveRef.current?.(false);
+    outOfBoundsWarningResolveRef.current = null;
+  }, []);
   const activePrinterProfileId = (activePrinterProfile?.id ?? '').trim();
   const isShiftHeld = useKeyPressed('shift');
 
@@ -1292,8 +1263,8 @@ export function SlicingPanel({
   }, [canPrint, canUpload, canUvTools, isShiftHeld, sliceIntent]);
   // 'preview' is always available regardless of network state
   const sliceFilenameBase = useMemo(
-    () => resolveSliceFilenameBase(models, activeModel),
-    [activeModel, models],
+    () => resolveSliceFilenameBase(visibleModels, activeModel),
+    [activeModel, visibleModels],
   );
 
   useEffect(() => {
@@ -1417,141 +1388,30 @@ export function SlicingPanel({
     return formatClockFromSeconds(totalSec);
   }, [effectiveMaterialProfile, estimatedLayerCount]);
 
-  // Shared pixel pitch calculation used by autoAaConfig.
-  // Prefers the explicit pixelSize field (µm, stored directly from the manufacturer
-  // spec) when available — avoids floating-point rounding introduced by deriving
-  // pitch from buildVolumeMm which is stored at only 3 decimal places.
-  const pixelPitchMm = useMemo(() => {
-    // Direct pixel size path (most accurate)
-    const pxSizeX = Number(activePrinterProfile?.pixelSize?.x);
-    const pxSizeY = Number(activePrinterProfile?.pixelSize?.y);
-    if (Number.isFinite(pxSizeX) && Number.isFinite(pxSizeY) && pxSizeX > 0 && pxSizeY > 0) {
-      return {
-        x: pxSizeX / 1000,
-        y: pxSizeY / 1000,
-      }; // µm → mm
-    }
-
-    // Fallback: derive from build volume ÷ resolution
-    const resX = Number(activePrinterProfile?.display?.resolutionX);
-    const resY = Number(activePrinterProfile?.display?.resolutionY);
-    const buildW = Number(activePrinterProfile?.buildVolumeMm?.width);
-    const buildD = Number(activePrinterProfile?.buildVolumeMm?.depth);
-
-    let pitchX: number | null = null;
-    let pitchY: number | null = null;
-    if (Number.isFinite(resX) && Number.isFinite(buildW) && resX > 0 && buildW > 0) {
-      pitchX = buildW / resX;
-    }
-    if (Number.isFinite(resY) && Number.isFinite(buildD) && resY > 0 && buildD > 0) {
-      pitchY = buildD / resY;
-    }
-    return {
-      x: pitchX ?? pitchY ?? 0.05,
-      y: pitchY ?? pitchX ?? 0.05,
-    };
-  }, [
-    activePrinterProfile?.pixelSize?.x,
-    activePrinterProfile?.pixelSize?.y,
-    activePrinterProfile?.buildVolumeMm?.depth,
-    activePrinterProfile?.buildVolumeMm?.width,
-    activePrinterProfile?.display?.resolutionX,
-    activePrinterProfile?.display?.resolutionY,
+  const sliceAntiAliasing = useMemo(() => resolveSliceAntiAliasing({
+    printerProfile: activePrinterProfile,
+    materialProfile: materialProfileForSlicing,
+    override: sessionAaOverrideDraft,
+    preset: aaAutoPreset,
+    layerHeightMm: effectiveLayerHeightMm,
+    lutCurves: savedCurves,
+  }), [
+    aaAutoPreset,
+    activePrinterProfile,
+    effectiveLayerHeightMm,
+    materialProfileForSlicing,
+    savedCurves,
+    sessionAaOverrideDraft,
   ]);
+  const effectiveAutoAaConfig = sliceAntiAliasing.decision.autoConfig;
 
-  // Auto AA config: physics-grounded parameters from pixel pitch + layer height.
-  // Computed asynchronously so Export-page transition can paint first, with
-  // a visible pending state in the AA panel.
-  useEffect(() => {
-    let cancelled = false;
-    setIsAutoAaCalculating(true);
-
-    const timeoutId = window.setTimeout(() => {
-      if (cancelled) return;
-
-      const layerHeightMm = Number(effectiveLayerHeightMm);
-      const safeLayerH = Number.isFinite(layerHeightMm) && layerHeightMm > 0 ? layerHeightMm : 0.05;
-
-      const nextAutoAaConfig: AutoAaResolvedConfig = aaAutoPreset === 'raw'
-        ? {
-            aaMode: 'Off',
-            antiAliasingMode: 'Coverage',
-            aaSteps: 0,
-            blurBrushRadiusPx: 0,
-            zBlurRadiusLayers: 0,
-            zBlendLookBack: 0,
-          }
-        : computePhysicalAaConfig(aaAutoPreset, pixelPitchMm.x, safeLayerH, pixelPitchMm.y);
-
-      const nextAutoZBlendLookBack = computePhysicalAaConfig('balanced', pixelPitchMm.x, safeLayerH, pixelPitchMm.y).zBlendLookBack;
-
-      if (cancelled) return;
-      setAutoAaConfig(nextAutoAaConfig);
-      setAutoZBlendLookBack(nextAutoZBlendLookBack);
-      setIsAutoAaCalculating(false);
-    }, 0);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [aaAutoPreset, effectiveLayerHeightMm, pixelPitchMm]);
-
-  const effectiveAutoAaConfig = isAutoAaCalculating ? PENDING_AUTO_AA_CONFIG : autoAaConfig;
-  const effectiveAutoZBlendLookBack = isAutoAaCalculating
-    ? DEFAULT_AUTO_Z_BLEND_LOOK_BACK
-    : autoZBlendLookBack;
-
-  const materialAaOverrideEnabled = profileAntiAliasingSettings.enableOverride === true;
+  const materialAaOverrideEnabled = sliceAntiAliasing.decision.overrideEnabled;
   useEffect(() => {
     if (!materialAaOverrideEnabled) return;
     setAaQualityMode('expert');
   }, [materialAaOverrideEnabled]);
 
-  const profileAaMode = materialAaOverrideEnabled
-    ? profileAntiAliasingSettings.mode
-    : effectiveAutoAaConfig.aaMode;
-  const profileAaLevel = materialAaOverrideEnabled
-    ? formatAaLevel(parseAaLevelSteps(profileAntiAliasingSettings.level) ?? 4)
-    : (effectiveAutoAaConfig.aaMode === 'Off' ? 'Off' as const : formatAaLevel(effectiveAutoAaConfig.aaSteps || 4));
-
-  // Resolved AA state: auto mode overrides manual state when AA is available.
-  const resolvedAaMode = profileAaMode;
-  const resolvedAaLevel = profileAaLevel;
-  const resolvedBlurBrushRadiusPx = materialAaOverrideEnabled
-    ? profileAntiAliasingSettings.blurBrushRadiusPx
-    : effectiveAutoAaConfig.blurBrushRadiusPx;
-  const resolvedBlurBrushKernel: BlurKernelMode = materialAaOverrideEnabled && profileAntiAliasingSettings.useCustomBlurBrushRadius
-    ? profileAntiAliasingSettings.blurBrushKernel
-    : 'gaussian';
-  const resolvedBlurBrushSigmaX = clampBlurSigma(profileAntiAliasingSettings.blurBrushSigmaX, 0.5);
-  const resolvedBlurBrushSigmaY = clampBlurSigma(profileAntiAliasingSettings.blurBrushSigmaY, 0.5);
-  const resolvedZBlurRadiusLayers = resolvedAaMode === '3DAA'
-    ? (materialAaOverrideEnabled ? profileAntiAliasingSettings.zBlurRadiusLayers : effectiveAutoAaConfig.zBlurRadiusLayers)
-    : 0;
-  const resolvedZBlurKernel: BlurKernelMode = materialAaOverrideEnabled && profileAntiAliasingSettings.useCustomZBlurRadius
-    ? profileAntiAliasingSettings.zBlurKernel
-    : 'box';
-  const resolvedZBlurSigma = clampBlurSigma(profileAntiAliasingSettings.zBlurSigma, 0.5);
-  const resolvedZBlendLookBack = profileAaMode === '3DAA' ? effectiveAutoZBlendLookBack : 0;
-
-  const effectiveAntiAliasingLevel =
-    !antiAliasingAvailable || resolvedAaMode === 'Off' ? 'Off' as const : resolvedAaLevel;
-  const effectiveAntiAliasingMode: 'Blur' | '3DAA' | 'Vertical2' | 'Coverage' =
-    !antiAliasingAvailable || resolvedAaMode === 'Off' ? 'Coverage' :
-    resolvedAaMode === '3DAA' ? 'Vertical2' :
-    'Blur';
-  const shouldApply3daaSamplingOverrides = resolvedAaMode === '3DAA';
-  const effectiveZaaKernel = resolvedAaMode === '3DAA'
-    ? 'perturb' as const
-    : undefined;
-  const effectiveZaaPattern = shouldApply3daaSamplingOverrides
-    ? profileAntiAliasingSettings.zaaPattern
-    : undefined;
-  const effectiveZaaDuplicateZ = shouldApply3daaSamplingOverrides
-    ? profileAntiAliasingSettings.zaaDuplicateZ
-    : undefined;
-  const duplicateZSupportedAtCurrentAa = (parseAaLevelSteps(resolvedAaLevel) ?? 4) >= 16;
+  const duplicateZSupportedAtCurrentAa = sliceAntiAliasing.decision.duplicateZSupported;
   const advancedSampleCountLabel = aaMode === '3DAA' ? '3DAA Sample Count' : 'XY Sample Count';
   const advancedSampleCountHelp = aaMode === '3DAA'
     ? 'Controls how many raster samples each layer uses before resolving the final grayscale. In 3DAA these samples are distributed through the layer height using perturbation, so higher values improve shallow slopes and edge stability but cost more slicing time.'
@@ -1585,88 +1445,9 @@ export function SlicingPanel({
   const effectiveBlurGraySourceMode = materialAaOverrideEnabled
     ? profileAntiAliasingSettings.blurGraySourceMode
     : 'lut';
-  const effectiveZBlendResinType = materialAaOverrideEnabled
-    ? profileAntiAliasingSettings.zBlendResinType
-    : autoDetectedResinType;
-  const effectiveSelectedLutCurveId = materialAaOverrideEnabled
-    ? profileAntiAliasingSettings.selectedLutCurveId
-    : selectedCurveId;
-  const effectiveCustomLutCurve = savedCurves.find((curve) => curve.id === effectiveSelectedLutCurveId) ?? null;
-  const effectiveCustomLut = effectiveCustomLutCurve ? sampleCurveToLut(effectiveCustomLutCurve.points) : opaqueDefaultLut;
-  const effectiveZBlendMaxAlphaPercent = effectiveZBlendResinType === 'clear'
-    ? Z_BLEND_MAX_ALPHA_BY_RESIN.clear
-    : effectiveZBlendResinType === 'custom'
-      ? Math.max(...effectiveCustomLut) / 255 * 100
-      : Z_BLEND_MAX_ALPHA_BY_RESIN.opaque;
   const blurUsesLutCurve = (aaMode === 'Blur' || aaMode === '3DAA') && effectiveBlurGraySourceMode === 'lut';
-  const shouldUseLutCurveForExport =
-    (effectiveAntiAliasingMode === 'Vertical2' || effectiveAntiAliasingMode === 'Blur' || effectiveAntiAliasingMode === 'Coverage')
-    && effectiveBlurGraySourceMode === 'lut';
 
-  const minimumAaProfileSupport = useMemo(() => {
-    const fallback = Math.max(
-      0,
-      Math.min(100, Math.round(Number(sessionAaOverrideDraft?.minimumAaAlphaPercent ?? effectiveMaterialProfile?.minimumAaAlphaPercent ?? 35))),
-    );
-
-    if (!effectiveMaterialProfile) {
-      return {
-        available: false as const,
-        value: fallback,
-      };
-    }
-
-    const outputFormat = (selectedFormat?.outputFormat ?? activePrinterProfile?.display.outputFormat ?? '').trim();
-    if (!outputFormat) {
-      return {
-        available: false as const,
-        value: fallback,
-      };
-    }
-
-    const normalizedOutput = outputFormat.toLowerCase();
-    const outputWithoutDot = normalizedOutput.replace(/^\./, '');
-    const settingsMode = resolveOutputSettingsMode(outputFormat, activePrinterProfile?.display.settingsMode);
-
-    const localAdapter = getProfileLocalMaterialSettingsAdapter(outputFormat, settingsMode);
-    const profileField = localAdapter?.fields.find((field) => {
-      const metadataPath = field.metadataPath?.trim().toLowerCase();
-      return metadataPath === 'dragonfruit.minimumaaalphapercent' || field.key === 'minimumAaAlphaPercent';
-    });
-
-    if (!profileField) {
-      return {
-        available: false as const,
-        value: fallback,
-      };
-    }
-
-    const profileAlphaFieldKey = profileField.key;
-
-    const localForOutput = effectiveMaterialProfile.localSettingsByOutput?.[normalizedOutput]
-      ?? effectiveMaterialProfile.localSettingsByOutput?.[outputWithoutDot]
-      ?? null;
-
-    const localValue = localForOutput?.[profileAlphaFieldKey];
-    const parsed = Number(localValue);
-    if (!Number.isFinite(parsed)) {
-      return {
-        available: true as const,
-        value: fallback,
-      };
-    }
-
-    return {
-      available: true as const,
-      value: Math.max(0, Math.min(100, Math.round(parsed))),
-    };
-  }, [
-    activePrinterProfile?.display.outputFormat,
-    activePrinterProfile?.display.settingsMode,
-    effectiveMaterialProfile,
-    sessionAaOverrideDraft?.minimumAaAlphaPercent,
-    selectedFormat?.outputFormat,
-  ]);
+  const minimumAaProfileSupport = sliceAntiAliasing.decision.minimumAaAlpha;
 
   const profileMinimumAaAlphaPercent = minimumAaProfileSupport.value;
   const hasProfileMinimumAaAlpha = minimumAaProfileSupport.available;
@@ -2049,11 +1830,14 @@ export function SlicingPanel({
       return;
     }
 
-    const visibleModels = models.filter((model) => model.visible);
     if (visibleModels.length === 0) {
-      alert(_(msg`No visible models available for slicing.`));
+      alert(excludedVisibleModelCount > 0
+        ? _(msg`All visible models are outside the build volume.`)
+        : _(msg`No visible models available for slicing.`));
       return;
     }
+
+    if (excludedVisibleModelCount > 0 && !(await requestOutOfBoundsSliceConfirmation())) return;
 
     const proceed = await Promise.resolve(onBeforeSliceStart?.(effectiveSliceIntent) ?? true).catch(() => false);
     if (!proceed) {
@@ -2121,44 +1905,20 @@ export function SlicingPanel({
       }
 
       const result = await runSliceExportOrchestrator({
-        aaOnSupports: aaOnSupportsEnabled,
-        models: visibleModels,
+        models,
+        excludedModelIds,
         printerProfile: activePrinterProfile,
         materialProfile: materialProfileForSlicing,
         filenameBase: sliceFilenameBase || activePrinterProfile.name || 'slice_export',
         outputPath: resolvedOutputPath.length > 0 ? resolvedOutputPath : null,
-        antiAliasingLevel: effectiveAntiAliasingLevel,
-        antiAliasingMode: effectiveAntiAliasingMode,
-        blurBrushRadiusPx: resolvedBlurBrushRadiusPx,
-        blurBrushKernel: resolvedBlurBrushKernel,
-        blurBrushSigmaX: resolvedBlurBrushSigmaX,
-        blurBrushSigmaY: resolvedBlurBrushSigmaY,
-        zBlurRadiusLayers: resolvedZBlurRadiusLayers,
-        zBlurKernel: resolvedZBlurKernel,
-        zBlurSigma: resolvedZBlurSigma,
-        zBlendLookBack: resolvedAaMode === '3DAA' ? resolvedZBlendLookBack : undefined,
-        zBlendMinimumAlphaPercent: resolvedAaMode === '3DAA'
-          ? profileMinimumAaAlphaPercent
-          : undefined,
-        zBlendMaxAlphaPercent: resolvedAaMode === '3DAA'
-          ? effectiveZBlendMaxAlphaPercent
-          : 90,
-        zBlendCustomLut: shouldUseLutCurveForExport
-          ? (effectiveZBlendResinType === 'clear'
-              ? clearDefaultLut
-              : effectiveZBlendResinType === 'custom'
-                ? effectiveCustomLut
-                : opaqueDefaultLut)
-          : undefined,
-        zaaKernel: effectiveZaaKernel,
-        zaaPattern: effectiveZaaPattern,
-        zaaDuplicateZ: effectiveZaaDuplicateZ,
+        antiAliasing: {
+          preset: aaAutoPreset,
+          override: sessionAaOverrideDraft,
+          lutCurves: savedCurves,
+        },
         ditherEnabled: effectiveDitherEnabledForSlice,
         ditherBitDepth: effectiveDitherBitDepthForSlice,
         ditherDeviceGamma: effectiveDitherDeviceGammaForSlice,
-        minimumAaAlphaPercentOverride: shouldUseLutCurveForExport && effectiveAntiAliasingMode === 'Blur'
-          ? 0
-          : profileMinimumAaAlphaPercent,
 
         outputMode: 'return',
         exportThumbnailPng,
@@ -2410,10 +2170,6 @@ export function SlicingPanel({
 
   // Auto-trigger slice when shouldAutoSlice becomes true
   useEffect(() => {
-    if (aaQualityMode === 'auto' && isAutoAaCalculating) {
-      return;
-    }
-
     if (!shouldAutoSlice) {
       if (autoSliceTimeoutRef.current !== null) {
         window.clearTimeout(autoSliceTimeoutRef.current);
@@ -2442,7 +2198,7 @@ export function SlicingPanel({
         autoSliceTimeoutRef.current = null;
       }
     };
-  }, [aaQualityMode, isAutoAaCalculating, isSlicingZip, shouldAutoSlice]);
+  }, [isSlicingZip, shouldAutoSlice]);
 
   const selectedLayerPreviewUrl = useMemo(() => {
     if (previewSelectedLayer < 1) return null;
@@ -2484,7 +2240,6 @@ export function SlicingPanel({
               <h3 className="text-sm font-semibold" style={{ color: 'var(--text-strong)' }}><Trans>Slicing</Trans></h3>
             </>
           )}
-          hideDivider={!isExpanded}
         />
         {isExpanded && (
           <div className="px-3 pb-3 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -2522,7 +2277,6 @@ export function SlicingPanel({
             <h3 className="text-sm font-semibold" style={{ color: 'var(--text-strong)' }}><Trans>Slicing</Trans></h3>
           </>
         )}
-        hideDivider={!isExpanded}
       />
 
       {isExpanded && (
@@ -2724,19 +2478,6 @@ export function SlicingPanel({
                           );
                         })}
                       </div>
-                      {isAutoAaCalculating && (
-                        <div
-                          className="flex items-center justify-center gap-1 rounded border px-2 py-1 text-[10px] font-medium"
-                          style={{
-                            borderColor: 'var(--border-subtle)',
-                            background: 'var(--surface-0)',
-                            color: 'var(--text-muted)',
-                          }}
-                        >
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          <span><Trans>Calculating AA profile…</Trans></span>
-                        </div>
-                      )}
                       <div className="h-1.5" />
                       <div
                         className="grid grid-cols-2 overflow-hidden rounded"
@@ -3648,8 +3389,7 @@ export function SlicingPanel({
 
           {/* Slice intent split-button */}
           {(() => {
-            const isAutoAaPending = aaQualityMode === 'auto' && isAutoAaCalculating;
-            const isDisabled = isSlicingZip || isAutoAaPending || !activePrinterProfile || !materialProfileForSlicing || models.length === 0;
+            const isDisabled = isSlicingZip || !activePrinterProfile || !materialProfileForSlicing || models.length === 0;
             type IconType = React.FC<{ className?: string }>;
             const intentOptions: { key: SliceIntent; label: string; Icon: IconType; enabled: boolean; menuOnly?: boolean }[] = [
               { key: 'file',    label: _(msg`Slice to File`),   Icon: Download as IconType, enabled: true },
@@ -3671,7 +3411,7 @@ export function SlicingPanel({
                     className={`ui-button ui-button-primary flex-1 !h-9 text-sm inline-flex items-center justify-center gap-1.5 ${hasMenuOptions && !isShiftHeld ? 'rounded-r-none' : ''} ${isSlicingZip ? 'cursor-wait opacity-70' : ''}`}
                   >
                     <CurrentIcon className="w-4 h-4 shrink-0" />
-                    {isSlicingZip ? _(msg`Slicing…`) : isAutoAaPending ? _(msg`Profiling AA…`) : current.label}
+                    {isSlicingZip ? _(msg`Slicing…`) : current.label}
                   </button>
                   {hasMenuOptions && !isShiftHeld && (
                     <button
@@ -3774,6 +3514,7 @@ export function SlicingPanel({
               <MaterialAntiAliasingSection
                 draft={materialAaEditorDraft}
                 printerDitherBitDepth={printerDitherBitDepth}
+                printerPanelBitDepth={printerPanelBitDepth}
                 onChange={(next) => {
                   setMaterialAaEditorDraft((current) => {
                     if (!current) return current;
@@ -3845,6 +3586,7 @@ export function SlicingPanel({
                 draft={editingSessionAaOverrideDraft}
                 lockActivationToggles
                 printerDitherBitDepth={printerDitherBitDepth}
+                printerPanelBitDepth={printerPanelBitDepth}
                 onChange={(next) => {
                   setEditingSessionAaOverrideDraft((current) => {
                     if (!current) return current;
@@ -4058,6 +3800,46 @@ export function SlicingPanel({
         </div>,
         document.body,
       )}
+
+      <StructuredDialogModal
+        open={showOutOfBoundsWarningModal}
+        ariaLabel="Out-of-bounds models will be excluded"
+        title={<Trans>Models Outside Build Volume</Trans>}
+        subtitle={<Trans>Only printable models will be sliced</Trans>}
+        icon={<AlertTriangle className="h-4 w-4" />}
+        iconTone="warning"
+        zIndexClassName="z-[130]"
+        closeAriaLabel="Close modal"
+        onClose={() => settleOutOfBoundsSliceConfirmation(false)}
+        onBackdropClick={() => settleOutOfBoundsSliceConfirmation(false)}
+        actions={(
+          <>
+            <Button
+              variant="secondary"
+              className="!h-9 text-xs"
+              onClick={() => settleOutOfBoundsSliceConfirmation(false)}
+            >
+              <Trans>Cancel</Trans>
+            </Button>
+            <Button
+              className="!h-9 text-xs"
+              onClick={() => settleOutOfBoundsSliceConfirmation(true)}
+            >
+              <Trans>Slice Printable Models</Trans>
+            </Button>
+          </>
+        )}
+      >
+        <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+          {excludedVisibleModelCount === 1 ? (
+            <Trans>One visible model outside the build volume will be excluded from this slice.</Trans>
+          ) : (
+            <Trans comment="{excludedVisibleModelCount} is always 2 or more; the singular case is its own message.">
+              <strong style={{ color: 'var(--text-strong)' }}>{excludedVisibleModelCount}</strong> visible models outside the build volume will be excluded from this slice.
+            </Trans>
+          )}
+        </p>
+      </StructuredDialogModal>
 
       <AaSupportWarningModal
         isOpen={showAaWarningModal}

@@ -16,7 +16,8 @@
 
 import { readFileSync, writeFileSync, statSync } from 'fs';
 import { basename, resolve, dirname } from 'path';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
+import { createRequire } from 'module';
 import { v4 as uuidv4 } from 'uuid';
 import {
   parseVoxlAuto,
@@ -40,14 +41,26 @@ import type {
   Vec3,
   SupportEntity,
 } from '../src/supports/types';
+import type { AaPreset } from '../src/features/slicing/autoAaPhysics';
 
 // ---------------------------------------------------------------------------
 // VOXL File I/O
 // ---------------------------------------------------------------------------
 
+// Pre-decoded embedded mesh bytes (STL) from the most recently loaded VOXL,
+// keyed by model id. Populated by loadVoxl for `embedded-chunk`/`embedded-file`
+// models; the slice path prefers these over hitting the filesystem.
+let LOADED_MESH_BYTES = new Map<string, Uint8Array>();
+// Pre-decoded full-resolution original mesh bytes (ORIG chunk), keyed by model
+// id. Present only for VOXLs saved with "Save original model along with
+// decimated"; the slice path prefers these over the decimated MESH bytes so it
+// slices the same geometry the GUI would.
+let LOADED_ORIG_BYTES = new Map<string, Uint8Array>();
 function loadVoxl(path: string): VoxlDocumentV1 {
   const raw = readFileSync(path);
   const result = parseVoxlAuto(raw);
+  LOADED_MESH_BYTES = result.meshBytes;
+  LOADED_ORIG_BYTES = result.originalMeshBytes ?? new Map();
   return result.document;
 }
 
@@ -129,6 +142,17 @@ function optionalFlag(flags: Record<string, string | boolean>, key: string): str
   const val = flags[key];
   if (val === true || val === undefined) return undefined;
   return val as string;
+}
+
+/** Reads and parses the JSON file a flag names, if the flag was given. */
+function readJsonFlag(flags: Record<string, string | boolean>, key: string): unknown {
+  const path = optionalFlag(flags, key);
+  if (path === undefined) return undefined;
+  try {
+    return JSON.parse(readFileSync(resolve(path), 'utf-8')) as unknown;
+  } catch (err) {
+    throw new Error(`--${key} ${path}: ${(err as Error).message}`);
+  }
 }
 
 function jsonOutput(flags: Record<string, string | boolean>): boolean {
@@ -1184,7 +1208,10 @@ function sceneArrange(args: ReturnType<typeof parseArgs>): void {
  * Same logic as cli.rs load_binary_stl.
  */
 function loadBinaryStl(path: string): Float32Array {
-  const data = readFileSync(path);
+  return parseBinaryStl(readFileSync(path));
+}
+
+function parseBinaryStl(data: Buffer): Float32Array {
   if (data.length < 84) throw new Error(`STL file too small: ${data.length} bytes`);
 
   const numTriangles = data.readUInt32LE(80);
@@ -1282,16 +1309,74 @@ function writePositionsBin(path: string, positions: Float32Array): void {
   writeFileSync(path, Buffer.from(positions.buffer, positions.byteOffset, positions.byteLength));
 }
 
+/** Shared zero-length array to overwrite a reference we want dropped without a fresh alloc. */
+const EMPTY_F32 = new Float32Array(0);
+
+/**
+ * Best-effort hand of freed memory back to V8/OS. Only actually does anything when
+ * node was started with --expose-gc (the benchmark driver sets that via NODE_OPTIONS);
+ * otherwise it's a no-op and V8 reclaims dropped references on its own under pressure.
+ * Used to keep the CLI's heap small on low-resource machines — geometry buffers are
+ * released the moment the slicing engine no longer needs them.
+ */
+function releaseHeap(): void {
+  const g = (globalThis as { gc?: () => void }).gc;
+  if (typeof g === 'function') g();
+}
+
+// `scene slice` builds its job with the app's own code, which reads the plugin
+// registry. Load it only for this command, so the others keep working on a
+// checkout where the registry has not been generated.
+function loadSceneSliceJob(): typeof import('./cli/sceneSliceJob') {
+  try {
+    return createRequire(import.meta.url)('./cli/sceneSliceJob');
+  } catch (err) {
+    if (/generated/i.test(String((err as Error).message))) {
+      throw new Error(
+        'scene slice needs the generated plugin registry. Run '
+        + '`npm run generate:plugin-registry && npm run generate:builtin-simple-plugins` first.\n'
+        + `(${(err as Error).message})`,
+      );
+    }
+    throw err;
+  }
+}
+
 function sceneSlice(args: ReturnType<typeof parseArgs>): void {
   const voxlPath = args.positional[0];
-  if (!voxlPath) throw new Error('Usage: scene slice <scene.voxl> --o <output.nanodlp> [--mesh-dir <dir>]');
+  if (!voxlPath) {
+    throw new Error(
+      'Usage: scene slice <scene.voxl> --o <output> [--mesh-dir <dir>]\n'
+      + '  [--printer <profile.json>] [--printer-id <id>]  preset, profile or app-exported bundle; builds the job the app would\n'
+      + '  [--material <profile.json>]                      default: the bundle\'s first material, else the app\'s default\n'
+      + '  [--aa-preset sharp|balanced|smooth|raw]          the panel\'s auto AA preset (default: balanced)\n'
+      + '  [--aa-settings <aa.json>]                        AA settings on top of the material\'s, like a session override\n'
+      + '  [--lut-curves <curves.json>]                     the curve library a custom LUT is looked up in\n'
+      + '  [--dither on|off] [--dither-bit-depth N] [--dither-device-gamma G]\n'
+      + '  [--layer-height N] [--build-width-mm N] [--build-depth-mm N]  override the material / printer',
+    );
+  }
 
   const output = requireFlag(args.flags, 'o');
   const meshDir = optionalFlag(args.flags, 'mesh-dir') ?? dirname(resolve(voxlPath));
-  const layerHeight = optionalFlag(args.flags, 'layer-height') ?? '0.05';
-  const buildWidth = optionalFlag(args.flags, 'build-width-mm') ?? '218.0';
-  const buildDepth = optionalFlag(args.flags, 'build-depth-mm') ?? '122.0';
-
+  const aaPreset = optionalFlag(args.flags, 'aa-preset') as AaPreset | 'raw' | undefined; // sharp|balanced|smooth|raw
+  const printerPath = optionalFlag(args.flags, 'printer');
+  const materialPath = printerPath ? optionalFlag(args.flags, 'material') : undefined;
+  const sliceJob = loadSceneSliceJob();
+  const job = sliceJob.resolveSceneSliceJob({
+    printer: printerPath ? JSON.parse(readFileSync(resolve(printerPath), 'utf-8')) : undefined,
+    printerId: optionalFlag(args.flags, 'printer-id'),
+    material: materialPath ? JSON.parse(readFileSync(resolve(materialPath), 'utf-8')) : undefined,
+    layerHeight: optionalFlag(args.flags, 'layer-height'),
+    buildWidthMm: optionalFlag(args.flags, 'build-width-mm'),
+    buildDepthMm: optionalFlag(args.flags, 'build-depth-mm'),
+    aaPreset,
+    aaSettings: readJsonFlag(args.flags, 'aa-settings'),
+    lutCurves: readJsonFlag(args.flags, 'lut-curves'),
+    dither: optionalFlag(args.flags, 'dither'), // 'on' | 'off' | undefined
+    ditherBitDepth: optionalFlag(args.flags, 'dither-bit-depth'),
+    ditherDeviceGamma: optionalFlag(args.flags, 'dither-device-gamma'),
+  });
   const doc = loadVoxl(voxlPath);
   const visibleModels = doc.models.filter((m) => m.visible);
 
@@ -1302,23 +1387,53 @@ function sceneSlice(args: ReturnType<typeof parseArgs>): void {
   // Phase 1: Load each model's STL, apply translation, collect all positions
   const allPositions: Float32Array[] = [];
   let totalTriangles = 0;
+  let maxZMm = 0;
 
   for (const model of visibleModels) {
-    const meshFileName = model.mesh.fileName ?? model.name + '.stl';
-    // Try mesh-dir, then absolute path, then cwd
-    let meshPath: string | null = null;
-    const candidates = [
-      resolve(meshDir, meshFileName),
-      meshFileName,
-      resolve(meshFileName),
-    ];
-    for (const c of candidates) {
-      try { statSync(c); meshPath = c; break; } catch { /* try next */ }
-    }
-    if (!meshPath) throw new Error(`Mesh file not found for model '${model.name}': tried ${candidates.join(', ')}`);
+    let positions: Float32Array;
 
-    console.error(`  loading ${model.name}: ${meshPath}`);
-    const positions = loadBinaryStl(meshPath);
+    // Mesh modifiers (hollowing / hole punches) are reconstructed by the codec
+    // from the MODL JSON + the HSRC/CAVT/PSRC snapshot chunks. Only a modifier
+    // that is *baked into geometry* affects what we slice — its result already
+    // lives in the MESH chunk, so we slice MESH as-is and never re-apply the
+    // snapshot chunks. Unbaked hollowing / hole punches are ignored (the GUI
+    // bakes those via desktop IPC before slicing; headless we take the stored
+    // geometry as given).
+    const mm = model.meshModifiers;
+    const hollow = mm?.hollowing;
+    const modifiersBaked = Boolean((hollow?.enabled && hollow.bakedIntoGeometry) || mm?.holePunchesBakedIntoGeometry);
+
+    // Geometry source: prefer the full-res ORIG chunk, EXCEPT when a modifier is
+    // baked in — ORIG is the pristine pre-modifier original and would slice the
+    // solid / un-punched shape, so a baked model reads the modified MESH chunk.
+    const meshBytes = LOADED_MESH_BYTES.get(model.id);
+    const origBytes = LOADED_ORIG_BYTES.get(model.id);
+    const embedded = modifiersBaked ? (meshBytes ?? origBytes) : (origBytes ?? meshBytes);
+    if (embedded) {
+      // `embedded-chunk`/`embedded-file`: the codec already decoded the geometry
+      // to STL bytes — no filesystem lookup needed.
+      positions = parseBinaryStl(Buffer.from(embedded.buffer, embedded.byteOffset, embedded.byteLength));
+      const src = embedded === origBytes ? 'orig' : 'mesh';
+      console.error(`  loading ${model.name}: <embedded ${src}${modifiersBaked ? ', baked-modifiers' : ''}>`);
+    } else if (model.mesh.mode === 'external-file' || model.mesh.fileName) {
+      const meshFileName = model.mesh.fileName ?? model.name + '.stl';
+      // Try mesh-dir, then absolute path, then cwd
+      let meshPath: string | null = null;
+      const candidates = [
+        resolve(meshDir, meshFileName),
+        meshFileName,
+        resolve(meshFileName),
+      ];
+      for (const c of candidates) {
+        try { statSync(c); meshPath = c; break; } catch { /* try next */ }
+      }
+      if (!meshPath) throw new Error(`Mesh file not found for model '${model.name}': tried ${candidates.join(', ')}`);
+
+      console.error(`  loading ${model.name}: ${meshPath}`);
+      positions = loadBinaryStl(meshPath);
+    } else {
+      throw new Error(`Model '${model.name}' has mesh.mode='${model.mesh.mode}' but no embedded bytes and no fileName`);
+    }
 
     // Apply full scene transform (position + rotation + scale)
     applyVoxlTransform(positions, model.transform);
@@ -1330,18 +1445,29 @@ function sceneSlice(args: ReturnType<typeof parseArgs>): void {
       console.error(`    transform: pos=(${t.position.x.toFixed(1)},${t.position.y.toFixed(1)},${t.position.z.toFixed(1)}) rot=(${t.rotation.x.toFixed(3)},${t.rotation.y.toFixed(3)},${t.rotation.z.toFixed(3)}) scale=(${t.scale.x},${t.scale.y},${t.scale.z})`);
     }
 
+    for (let i = 2; i < positions.length; i += 3) {
+      if (positions[i] > maxZMm) maxZMm = positions[i];
+    }
     allPositions.push(positions);
     totalTriangles += positions.length / 9;
   }
 
-  // Phase 2: Merge into single positions buffer
+  // Phase 2: Merge into single positions buffer, releasing each per-model source
+  // array the moment it has been copied. Peak heap is then ~one merged copy plus
+  // the single model being copied, not (all sources + merged) — matters on
+  // low-resource machines where the scene's geometry may already be a large slice
+  // of available RAM.
   const totalFloats = allPositions.reduce((sum, p) => sum + p.length, 0);
-  const merged = new Float32Array(totalFloats);
+  let merged: Float32Array = new Float32Array(totalFloats);
   let writeOffset = 0;
-  for (const p of allPositions) {
+  for (let i = 0; i < allPositions.length; i++) {
+    const p = allPositions[i];
     merged.set(p, writeOffset);
     writeOffset += p.length;
+    allPositions[i] = EMPTY_F32; // drop the per-model copy immediately
   }
+  allPositions.length = 0;
+  releaseHeap();
 
   // Phase 3: Write merged positions.bin
   const tmpDir = `/tmp/df-scene-slice-${Date.now()}`;
@@ -1350,21 +1476,49 @@ function sceneSlice(args: ReturnType<typeof parseArgs>): void {
   writePositionsBin(mergedPath, merged);
   console.error(`  merged: ${totalTriangles} triangles -> ${mergedPath}`);
 
+  // Hand-off complete: positions.bin on disk now owns the geometry, and the
+  // slicing engine (Rust) reads it from there — node holds nothing the engine
+  // needs. Drop the merged copy (the last large buffer) before shelling out so
+  // the process sits near-idle in RAM during the blocking slice.
+  merged = EMPTY_F32;
+  releaseHeap();
+
   // Phase 4: Shell out to Rust slicer
   const rustCli = resolve(dirname(new URL(import.meta.url).pathname), '../rust/dragonfruit-cli/target/release/dragonfruit-cli');
-  const sliceCmd = [
-    rustCli,
-    'slice', 'run',
-    mergedPath,
-    '-o', resolve(output),
-    '--layer-height', layerHeight,
-    '--build-width-mm', buildWidth,
-    '--build-depth-mm', buildDepth,
-    '--json',
-  ].join(' ');
+  const run = sliceJob.buildSceneSliceRun(job, {
+    maxZMm,
+    models: visibleModels.map((model) => ({
+      id: model.id,
+      name: model.name,
+      polygonCount: model.polygonCount,
+      transform: model.transform,
+    })),
+  }, mergedPath, resolve(output), resolve(tmpDir, 'job.json'));
+  if (run.jobJson) writeFileSync(resolve(tmpDir, 'job.json'), run.jobJson);
+  const { assembled } = run;
+  if (assembled && job.printer) {
+    console.error(
+      `scene slice: printer '${job.printer.name}' -> ${assembled.sourceWidthPx}x${assembled.sourceHeightPx} ${assembled.xPackingMode} `
+      + `build ${assembled.buildWidthMm}x${assembled.buildDepthMm}mm layer ${assembled.layerHeightMm}mm fmt ${assembled.outputFormat}`
+      + `${assembled.formatVersion ? ` ${assembled.formatVersion}` : ''}, material '${job.material?.name}'`,
+    );
+    console.error(
+      `scene slice: dither ${assembled.ditherEnabled ? `on (${assembled.ditherBitDepth}-bit, gamma ${assembled.ditherDeviceGamma})` : 'off'}`,
+    );
+  }
+  if (assembled && job.antiAliasing) {
+    const aa = assembled.antiAliasing;
+    console.error(
+      `scene slice: AA '${job.antiAliasing.preset}'${job.antiAliasing.override ? ' + settings' : ''} -> `
+      + `${aa.antiAliasingLevel} ${aa.antiAliasingMode} `
+      + `blur=${aa.blurBrushRadiusPx}px zblur=${aa.zBlurRadiusLayers} lookback=${aa.zBlendLookBack}`,
+    );
+  }
 
-  console.error(`  slicing: ${sliceCmd}`);
-  const result = execSync(sliceCmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+  const shown = run.args.map((arg, i) => (run.args[i - 1] === '--metadata-json' ? `<${arg.length} bytes>` : arg));
+  console.error(`  slicing: ${rustCli} ${shown.join(' ')}`);
+  // No shell: the metadata is JSON, and the paths may contain spaces.
+  const result = execFileSync(rustCli, run.args, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
 
   // Cleanup temp
   execSync(`rm -rf ${tmpDir}`);
@@ -1372,6 +1526,11 @@ function sceneSlice(args: ReturnType<typeof parseArgs>): void {
   if (jsonOutput(args.flags)) {
     // Parse and augment the Rust output with scene info
     const sliceResult = JSON.parse(result);
+    // Surface the named preset in the AA block — the Rust engine only knows the
+    // resolved level/mode, but the preset name is what a user reads in the log.
+    if (sliceResult.anti_aliasing && typeof sliceResult.anti_aliasing === 'object') {
+      sliceResult.anti_aliasing = { preset: job.antiAliasing?.preset ?? 'raw', ...sliceResult.anti_aliasing };
+    }
     sliceResult.scene = {
       voxl: resolve(voxlPath),
       models: visibleModels.length,

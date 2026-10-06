@@ -1,6 +1,8 @@
 'use client';
 
 import React from 'react';
+import { useLingui } from '@lingui/react';
+import { msg } from '@lingui/core/macro';
 import type { ScanResults } from '@/volumeAnalysis/IslandScan/ScanOrchestrator';
 import { rleIntersectDilated, type RleLabels, type RleMask } from '@/volumeAnalysis/IslandScan/rle';
 import type { useIslandManager } from '@/volumeAnalysis/IslandScan/useIslandManager';
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
+  const { _ } = useLingui();
   const [result, setResult] = React.useState<BuildVolumeHierarchyResult | null>(null);
   const [includeEventNodes, setIncludeEventNodes] = React.useState<boolean>(false);
   const [voxelView, setVoxelView] = React.useState<'nodes' | 'leaves' | 'systems' | 'boundedSystems' | 'boundedCaps'>('nodes');
@@ -835,20 +838,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
     }
 
     return { nodes, leaves, systems, boundedSystems, boundedCaps: boundedCapsLayers };
-  }, [layerHeightMm, mergeProminence.significantKeys, result, significantMergeEdges]);
-
-  const applyCurrentVoxelView = React.useCallback((scanData: ScanResults) => {
-    if (!result || !remappedLabelSets) return;
-    if (voxelView === 'nodes') {
-      applyNodeLabelsToVoxels(scanData, remappedLabelSets.nodes);
-    } else if (voxelView === 'leaves') {
-      applyNodeLabelsToVoxels(scanData, remappedLabelSets.leaves);
-    } else if (voxelView === 'systems') {
-      applyNodeLabelsToVoxels(scanData, remappedLabelSets.systems);
-    } else {
-      applyNodeLabelsToVoxels(scanData, voxelView === 'boundedCaps' ? remappedLabelSets.boundedCaps : remappedLabelSets.boundedSystems);
-    }
-  }, [applyNodeLabelsToVoxels, remappedLabelSets, result, voxelView]);
+  }, [layerHeightMm, mergeProminence, result, significantMergeEdges]);
 
   const eventLog = React.useMemo(() => {
     if (!result) return [] as Array<{ layerIndex: number; birth: number; merge: number; split: number; death: number }>;
@@ -874,7 +864,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
   return (
     <Card>
       <CardHeader
-        left={<h3 className="text-sm font-semibold" style={{ color: 'var(--text-strong)' }}>Island Volumes: Hierarchy Builder</h3>}
+        left={<h3 className="text-sm font-semibold" style={{ color: 'var(--text-strong)' }}>{_(msg`Island Volumes: Hierarchy Builder`)}</h3>}
         right={(
           <Button
             type="button"
@@ -883,7 +873,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
             size="sm"
             className="!h-8 !px-2.5 !py-0 text-[11px]"
           >
-            Clear
+            {_(msg`Clear`)}
           </Button>
         )}
       />
@@ -908,7 +898,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
         size="sm"
         className="w-full !h-8 !px-2.5 !py-0 text-[11px] disabled:opacity-50"
       >
-        Build Hierarchy
+        {_(msg`Build Hierarchy`)}
       </Button>
 
       {result && islands.scanData && (
@@ -922,7 +912,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
           size="sm"
           className="w-full !h-8 !px-2.5 !py-0 text-[11px]"
         >
-          Show Nodes In Voxels
+          {_(msg`Show Nodes In Voxels`)}
         </Button>
       )}
 
@@ -938,7 +928,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
             }}
             className={`ui-button !h-8 px-2.5 py-0 text-[11px] ${voxelView === 'nodes' ? 'ui-button-primary' : 'ui-button-secondary'}`}
           >
-            Voxels: Nodes
+            {_(msg`Voxels: Nodes`)}
           </button>
           <button
             type="button"
@@ -950,7 +940,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
             }}
             className={`ui-button !h-8 px-2.5 py-0 text-[11px] ${voxelView === 'leaves' ? 'ui-button-primary' : 'ui-button-secondary'}`}
           >
-            Voxels: Leaves
+            {_(msg`Voxels: Leaves`)}
           </button>
           <button
             type="button"
@@ -962,7 +952,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
             }}
             className={`ui-button !h-8 px-2.5 py-0 text-[11px] ${voxelView === 'systems' ? 'ui-button-primary' : 'ui-button-secondary'}`}
           >
-            Voxels: Systems
+            {_(msg`Voxels: Systems`)}
           </button>
           <button
             type="button"
@@ -974,7 +964,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
             }}
             className={`ui-button !h-8 px-2.5 py-0 text-[11px] ${voxelView === 'boundedSystems' ? 'ui-button-primary' : 'ui-button-secondary'}`}
           >
-            Voxels: Bounded
+            {_(msg`Voxels: Bounded`)}
           </button>
           <button
             type="button"
@@ -986,7 +976,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
             }}
             className={`ui-button !h-8 px-2.5 py-0 text-[11px] ${voxelView === 'boundedCaps' ? 'ui-button-primary' : 'ui-button-secondary'}`}
           >
-            Voxels: Caps
+            {_(msg`Voxels: Caps`)}
           </button>
         </div>
       )}
@@ -999,7 +989,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
           size="sm"
           className="w-full !h-8 !px-2.5 !py-0 text-[11px]"
         >
-          {includeEventNodes ? 'Logical Volumes: Show Ownership Leaves Only' : 'Logical Volumes: Include Event Nodes'}
+          {includeEventNodes ? _(msg`Logical Volumes: Show Ownership Leaves Only`) : _(msg`Logical Volumes: Include Event Nodes`)}
         </Button>
       )}
 
@@ -1103,7 +1093,7 @@ export function IslandVolumesHierarchyCard({ islands, layerHeightMm }: Props) {
 
       {!islands.scanData && (
         <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          Run an Island Scan first.
+          {_(msg`Run an Island Scan first.`)}
         </div>
       )}
       </div>

@@ -127,7 +127,6 @@ export function PreparePanelStack({
     isApplyingBlockersHollowing,
     isHollowingDirty,
     isHollowingApplied,
-    canResetHollowing,
     hollowingEditMode,
     isShellFaceSelectionPending,
   } = hollowing;
@@ -317,7 +316,6 @@ export function PreparePanelStack({
             isPreviewing={isPreviewingHollowing}
             isApplyingBlockers={isApplyingBlockersHollowing || isPreviewingHollowing}
             canApply={!isShellFaceSelectionPending && (isHollowingDirty || !isHollowingApplied)}
-            canReset={canResetHollowing}
             canEdit={!isShellFaceSelectionPending && Boolean(scene.activeModel)}
             isEditMode={hollowingEditMode}
             isHollowingApplied={isHollowingApplied}

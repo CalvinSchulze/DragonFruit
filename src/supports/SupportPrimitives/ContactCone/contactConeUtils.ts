@@ -85,6 +85,21 @@ export function getConeQuaternion(normal: Vec3): THREE.Quaternion {
 }
 
 /**
+ * The cone's rotation, written into `target`.
+ *
+ * The instance batches lay out thousands of cones per pass and re-lay out
+ * whenever the visible set changes, so a helper that mints its own vectors costs
+ * more than the maths it does.
+ */
+export function getConeQuaternionInto(normal: Vec3, target: THREE.Quaternion): THREE.Quaternion {
+    _coneAxis.set(normal.x, normal.y, normal.z).negate();
+    return target.setFromUnitVectors(UP, _coneAxis);
+}
+
+const UP = new THREE.Vector3(0, 1, 0);
+const _coneAxis = new THREE.Vector3();
+
+/**
  * Get the penetration-adjusted contact position.
  * Pushes the contact face slightly into the model along the axis.
  */

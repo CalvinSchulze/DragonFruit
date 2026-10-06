@@ -415,7 +415,7 @@ export function EmptySceneState({
     } finally {
       setReopeningEntryId(null);
     }
-  }, [onReopenRecentFile]);
+  }, [_, onReopenRecentFile]);
 
   const triggerMeshPicker = React.useCallback(() => {
     if (onLoadMeshClick) {
@@ -583,10 +583,9 @@ export function EmptySceneState({
                   <span>{_(msg`Load Mesh`)}</span>
                 </div>
                 <div className="text-[11px]" style={{ color: 'color-mix(in srgb, var(--accent-contrast), black 16%)' }}>
-                  {_(msg`Mesh files (.stl, .obj, .3mf)`)}
+                  {MESH_DROP_EXTENSIONS.join(' • ')}
                 </div>
               </button>
-
               {onImportSceneChange && (
                 <button
                   type="button"
@@ -602,7 +601,7 @@ export function EmptySceneState({
                     <span>{_(msg`Import Scene`)}</span>
                   </div>
                   <div className="text-[11px]" style={{ color: 'color-mix(in srgb, var(--accent-secondary-contrast), black 18%)' }}>
-                    {_(msg`Scene files (.voxl, .lys)`)}
+                    {sceneExtensionLabels.map((label) => `.${label.toLowerCase()}`).join(' • ')}
                   </div>
                 </button>
               )}

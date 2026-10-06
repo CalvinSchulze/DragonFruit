@@ -6,9 +6,8 @@ import { MATCAP_OPTIONS, MESH_SHADER_OPTIONS, type MatcapVariant, type MeshShade
 import { HexColorPicker } from 'react-colorful';
 import { MeshShaderPreviewSlot } from '@/components/settings/meshSettings/MeshShaderPreviewSlot';
 import { MeshShaderPreviewCanvas } from '@/components/settings/meshSettings/MeshShaderPreviewCanvas';
-import { Input, Select } from '@/components/atoms';
+import { ColorSwatchInput, Input, Select } from '@/components/atoms';
 import { Layers, MousePointer2, RotateCcw, SlidersHorizontal } from 'lucide-react';
-import { DEFAULT_HOVER_COLOR, DEFAULT_SELECTION_COLOR } from '@/features/scene/useSceneCollectionManager';
 
 type PreviewModelConfig = {
   label: string;
@@ -20,14 +19,13 @@ type PreviewModelsManifest = {
 };
 
 type MeshSettingsTabProps = {
-  shaderType: MeshShaderType;
-  onShaderTypeChange: (shaderType: MeshShaderType) => void;
+  /** The type this tab is configuring. Independent of the camera dropdown's view mode. */
+  configuredShaderType: MeshShaderType;
+  onConfiguredShaderTypeChange: (shaderType: MeshShaderType) => void;
   matcapVariant: MatcapVariant;
   onMatcapVariantChange: (variant: MatcapVariant) => void;
   flatUseVertexColors: boolean;
   onFlatUseVertexColorsChange: (value: boolean) => void;
-  toonSteps: number;
-  onToonStepsChange: (value: number) => void;
   meshColor: string;
   onMeshColorChange: (color: string) => void;
   ambientIntensity: number;
@@ -35,7 +33,10 @@ type MeshSettingsTabProps = {
   directionalIntensity: number;
   onDirectionalIntensityChange: (value: number) => void;
   materialRoughness: number;
+  /** Multiplier on the baked occlusion's strength; 0 means the bake is off. */
+  bakedAoIntensity: number;
   onMaterialRoughnessChange: (value: number) => void;
+  onBakedAoIntensityChange: (value: number) => void;
   xrayOpacity: number;
   onXrayOpacityChange: (value: number) => void;
   heatmapMinAngle: number;
@@ -44,25 +45,29 @@ type MeshSettingsTabProps = {
   onHeatmapMaxAngleChange: (value: number) => void;
   heatmapColors: string[];
   onHeatmapColorChange: (index: number, color: string) => void;
-  selectionColor: string;
-  onSelectionColorChange: (color: string) => void;
-  hoverColor: string;
-  onHoverColorChange: (color: string) => void;
+  /**
+   * Selection/hover tint, owned by the active theme — these are
+   * `ThemeCustomColors.meshSelectionColor` / `meshHoverColor` mirrored into this
+   * tab, not separate appearance overrides.
+   */
+  meshSelectionColor: string;
+  onMeshSelectionColorChange: (color: string) => void;
+  meshHoverColor: string;
+  onMeshHoverColorChange: (color: string) => void;
   hoverTintStrength: number;
   onHoverTintStrengthChange: (value: number) => void;
   selectedTintStrength: number;
   onSelectedTintStrengthChange: (value: number) => void;
+  defaultMeshSelectionColor: string;
+  defaultMeshHoverColor: string;
 };
-
 export function MeshSettingsTab({
-  shaderType,
-  onShaderTypeChange,
+  configuredShaderType,
+  onConfiguredShaderTypeChange,
   matcapVariant,
   onMatcapVariantChange,
   flatUseVertexColors,
   onFlatUseVertexColorsChange,
-  toonSteps,
-  onToonStepsChange,
   meshColor,
   onMeshColorChange,
   ambientIntensity,
@@ -70,6 +75,8 @@ export function MeshSettingsTab({
   directionalIntensity,
   onDirectionalIntensityChange,
   materialRoughness,
+  bakedAoIntensity,
+  onBakedAoIntensityChange,
   onMaterialRoughnessChange,
   xrayOpacity,
   onXrayOpacityChange,
@@ -79,14 +86,16 @@ export function MeshSettingsTab({
   onHeatmapMaxAngleChange,
   heatmapColors,
   onHeatmapColorChange,
-  selectionColor,
-  onSelectionColorChange,
-  hoverColor,
-  onHoverColorChange,
+  meshSelectionColor,
+  onMeshSelectionColorChange,
+  meshHoverColor,
+  onMeshHoverColorChange,
   hoverTintStrength,
   onHoverTintStrengthChange,
   selectedTintStrength,
   onSelectedTintStrengthChange,
+  defaultMeshSelectionColor,
+  defaultMeshHoverColor,
 }: MeshSettingsTabProps) {
   const { _ } = useLingui();
   const [previewModel, setPreviewModel] = React.useState<string>('knot');
@@ -119,18 +128,20 @@ export function MeshSettingsTab({
   const totalLight = ambientIntensity + directionalIntensity;
   const lightness = Math.min(4, Math.max(0, totalLight));
   const contrast = totalLight > 0 ? directionalIntensity / totalLight : 0.5;
-  const previewSelectedTintColor = selectionColor;
+  const previewSelectedTintColor = meshSelectionColor;
   const previewSelectedTintStrength = selectedTintStrength;
 
-  const showLighting = shaderType === 'soft_clay' || shaderType === 'toon' || shaderType === 'xray';
-  const showRoughness = shaderType === 'soft_clay' || shaderType === 'xray';
+  const showLighting = configuredShaderType === 'soft_clay' || configuredShaderType === 'xray';
+  const showRoughness = configuredShaderType === 'soft_clay' || configuredShaderType === 'xray';
+  // The baked occlusion only reaches the model through the Standard material.
+  const showBakedAo = configuredShaderType === 'soft_clay';
   const hasRenderingOptions =
-    shaderType === 'matcap' ||
-    shaderType === 'flat_unlit' ||
-    shaderType === 'toon' ||
+    configuredShaderType === 'matcap' ||
+    configuredShaderType === 'flat_unlit' ||
     showRoughness ||
+    showBakedAo ||
     showLighting ||
-    shaderType === 'overhang_heatmap';
+    configuredShaderType === 'overhang_heatmap';
 
   const activeHexColor = activeColorIndex === 0 ? meshColor : heatmapColors[activeColorIndex - 1];
   const onActiveHexChange = React.useCallback((c: string) => {
@@ -151,10 +162,9 @@ export function MeshSettingsTab({
   }, [lightness, onAmbientIntensityChange, onDirectionalIntensityChange]);
 
   const handleResetColors = React.useCallback(() => {
-    onSelectionColorChange(DEFAULT_SELECTION_COLOR);
-    onHoverColorChange(DEFAULT_HOVER_COLOR);
-  }, [onSelectionColorChange, onHoverColorChange]);
-
+    onMeshSelectionColorChange(defaultMeshSelectionColor);
+    onMeshHoverColorChange(defaultMeshHoverColor);
+  }, [onMeshSelectionColorChange, onMeshHoverColorChange, defaultMeshSelectionColor, defaultMeshHoverColor]);
   return (
     <div className="space-y-3">
 
@@ -175,7 +185,7 @@ export function MeshSettingsTab({
               Shader &amp; Preview
             </h3>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              Choose the active render shader and tune the mesh color.
+              Pick the shader type to configure here, and tune the mesh color. The camera dropdown chooses what the viewport renders.
             </p>
           </div>
         </div>
@@ -186,8 +196,8 @@ export function MeshSettingsTab({
               Shader Type
             </label>
             <Select
-              value={shaderType}
-              onChange={(e) => onShaderTypeChange(e.target.value as MeshShaderType)}
+              value={configuredShaderType}
+              onChange={(e) => onConfiguredShaderTypeChange(e.target.value as MeshShaderType)}
               className="w-full !h-8"
             >
               {MESH_SHADER_OPTIONS.map((opt) => (
@@ -221,10 +231,9 @@ export function MeshSettingsTab({
             style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)', aspectRatio: '10 / 7' }}
           >
             <MeshShaderPreviewSlot
-              shaderType={shaderType}
+              shaderType={configuredShaderType}
               matcapVariant={matcapVariant}
               flatUseVertexColors={flatUseVertexColors}
-              toonSteps={toonSteps}
               meshColor={meshColor}
               materialRoughness={materialRoughness}
               previewModel={previewModel}
@@ -235,7 +244,7 @@ export function MeshSettingsTab({
               heatmapMaxAngle={heatmapMaxAngle}
               heatmapColors={heatmapColors}
               hoverTintStrength={0.5}
-              selectedTintStrength={0.75}
+              selectedTintStrength={0.7}
             />
           </div>
 
@@ -264,7 +273,7 @@ export function MeshSettingsTab({
               />
             </div>
 
-            {shaderType === 'overhang_heatmap' && (
+            {configuredShaderType === 'overhang_heatmap' && (
               <div className="flex items-center gap-1 pt-0.5">
                 <button
                   type="button"
@@ -309,7 +318,7 @@ export function MeshSettingsTab({
             </div>
 
             <div className="grid grid-cols-2 gap-2 mt-2">
-            {shaderType === 'matcap' && (
+            {configuredShaderType === 'matcap' && (
               <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
                 <label className="text-xs font-medium block mb-1.5" style={{ color: 'var(--text-muted)' }}>
                   Matcap Style
@@ -326,7 +335,7 @@ export function MeshSettingsTab({
               </div>
             )}
 
-            {shaderType === 'flat_unlit' && (
+            {configuredShaderType === 'flat_unlit' && (
               <div className="col-span-2 rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -355,22 +364,6 @@ export function MeshSettingsTab({
               </div>
             )}
 
-            {shaderType === 'toon' && (
-              <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
-                <div className="flex items-center justify-between text-xs mb-1.5">
-                  <span className="font-medium" style={{ color: 'var(--text-muted)' }}>Toon Steps</span>
-                  <span className="font-semibold tabular-nums" style={{ color: 'var(--text-strong)' }}>{toonSteps}</span>
-                </div>
-                <input
-                  type="range" min="2" max="16" step="1"
-                  value={toonSteps}
-                  onChange={(e) => onToonStepsChange(parseInt(e.target.value, 10))}
-                  className="w-full h-2 rounded-lg appearance-none cursor-pointer"
-                  style={{ accentColor: 'var(--accent)', background: 'color-mix(in srgb, var(--text-muted), transparent 72%)' }}
-                />
-              </div>
-            )}
-
             {showRoughness && (
               <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
                 <div className="flex items-center justify-between text-xs mb-1.5">
@@ -386,6 +379,7 @@ export function MeshSettingsTab({
                 />
               </div>
             )}
+
 
             {showLighting && (
               <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
@@ -419,7 +413,23 @@ export function MeshSettingsTab({
               </div>
             )}
 
-            {shaderType === 'xray' && (
+            {showBakedAo && (
+              <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
+                <div className="flex items-center justify-between text-xs mb-1.5">
+                  <span className="font-medium" style={{ color: 'var(--text-muted)' }}>Ambient Occlusion</span>
+                  <span className="font-semibold tabular-nums" style={{ color: 'var(--text-strong)' }}>{bakedAoIntensity.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range" min="0.0" max="2.0" step="0.05"
+                  value={bakedAoIntensity}
+                  onChange={(e) => onBakedAoIntensityChange(parseFloat(e.target.value))}
+                  className="w-full h-2 rounded-lg appearance-none cursor-pointer"
+                  style={{ accentColor: 'var(--accent)', background: 'color-mix(in srgb, var(--text-muted), transparent 72%)' }}
+                />
+              </div>
+            )}
+
+            {configuredShaderType === 'xray' && (
               <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
                 <div className="flex items-center justify-between text-xs mb-1.5">
                   <span className="font-medium" style={{ color: 'var(--text-muted)' }}>X-Ray Opacity</span>
@@ -435,7 +445,7 @@ export function MeshSettingsTab({
               </div>
             )}
 
-            {shaderType === 'overhang_heatmap' && (
+            {configuredShaderType === 'overhang_heatmap' && (
               <>
                 <div className="rounded-md border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-0)' }}>
                   <div className="flex items-center justify-between text-xs mb-1.5">
@@ -487,7 +497,8 @@ export function MeshSettingsTab({
               Selection &amp; Hover
             </h3>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              How selected and hovered models are emphasized throughout the app.
+              How selected and hovered models are emphasized throughout the app. These two colors come from the
+              current theme — editing them here changes the theme, exactly like UI &amp; Theme › Mesh Highlights.
             </p>
           </div>
         </div>
@@ -511,17 +522,15 @@ export function MeshSettingsTab({
                 <div className="space-y-1">
                   <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Selection Color</div>
                   <div className="flex items-center gap-2">
-                    <input
-                      type="color"
-                      value={selectionColor}
-                      onChange={(e) => onSelectionColorChange(e.target.value)}
-                      className="h-8 w-10 shrink-0 rounded border"
-                      style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}
+                    <ColorSwatchInput
+                      value={meshSelectionColor}
+                      onChange={onMeshSelectionColorChange}
+                      className="h-8 w-10"
                     />
                     <input
                       type="text"
-                      value={selectionColor}
-                      onChange={(e) => onSelectionColorChange(e.target.value)}
+                      value={meshSelectionColor}
+                      onChange={(e) => onMeshSelectionColorChange(e.target.value)}
                       className="ui-input h-8 w-[7.5rem] min-w-0"
                       placeholder="#ec2a77"
                     />
@@ -530,17 +539,15 @@ export function MeshSettingsTab({
                 <div className="space-y-1">
                   <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Hover Color</div>
                   <div className="flex items-center gap-2">
-                    <input
-                      type="color"
-                      value={hoverColor}
-                      onChange={(e) => onHoverColorChange(e.target.value)}
-                      className="h-8 w-10 shrink-0 rounded border"
-                      style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface-1)' }}
+                    <ColorSwatchInput
+                      value={meshHoverColor}
+                      onChange={onMeshHoverColorChange}
+                      className="h-8 w-10"
                     />
                     <input
                       type="text"
-                      value={hoverColor}
-                      onChange={(e) => onHoverColorChange(e.target.value)}
+                      value={meshHoverColor}
+                      onChange={(e) => onMeshHoverColorChange(e.target.value)}
                       className="ui-input h-8 w-[7.5rem] min-w-0"
                       placeholder="#ec2a77"
                     />
@@ -626,16 +633,15 @@ export function MeshSettingsTab({
                 matcapVariant="neutral"
                 flatUseVertexColors={true}
                 useVertexColors={false}
-                toonSteps={5}
                 meshColor="#a3a3a3"
-                materialRoughness={0.65}
+                materialRoughness={0.55}
                 previewModel="knot"
-                ambientIntensity={0.6}
-                directionalIntensity={0.8}
+                ambientIntensity={0.28}
+                directionalIntensity={1.12}
                 xrayOpacity={0.25}
                 heatmapMinAngle={0}
                 heatmapMaxAngle={45}
-                hoverTintColor={hoverColor}
+                hoverTintColor={meshHoverColor}
                 selectedTintColor={previewSelectedTintColor}
                 hoverTintStrength={hoverTintStrength}
                 selectedTintStrength={previewSelectedTintStrength}

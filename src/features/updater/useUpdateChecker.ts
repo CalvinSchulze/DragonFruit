@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useIsLinux } from '@/hooks/usePlatform';
+import { isAllowSameVersionEnabled } from '@/features/updater/debugForceSession';
 import {
   fetchUpdateInfo,
   downloadAndInstall,
@@ -61,7 +62,9 @@ export function useUpdateChecker() {
     console.log('[updater] checking for updates on channel:', channel);
 
     try {
-      const info = await fetchUpdateInfo(channel);
+      const allowSame = isAllowSameVersionEnabled();
+      if (allowSame) console.log('[updater] handleCheck with allow_same_version=true');
+      const info = await fetchUpdateInfo(channel, allowSame);
 
       if (!info) {
         // Couldn't reach the update server or no release exists yet.
@@ -72,6 +75,17 @@ export function useUpdateChecker() {
       }
 
       // If we got info back, the plugin found a newer version.
+      // Enrich body if missing (same-version reinstall has no notes in feed)
+      if (info && !info.body) {
+        try {
+          const ghRes = await fetch(`https://api.github.com/repos/Open-Resin-Alliance/DragonFruit/releases/tags/v${info.version}`);
+          if (ghRes.ok) {
+            const gh = await ghRes.json() as { body?: string; published_at?: string };
+            if (gh.body) info.body = gh.body as string;
+            if (gh.published_at && !info.date) info.date = gh.published_at as string;
+          }
+        } catch {}
+      }
       setState({ status: 'available', info });
 
       // Persist the last check timestamp.

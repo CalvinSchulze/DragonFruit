@@ -18,6 +18,11 @@ import React from 'react';
 import type { TenonPreviewFrame, OrganicCutLoopPoint, OrganicCutResult } from './types';
 import type { OrganicCutPanelState } from './OrganicCutPanel';
 import {
+  useOrganicCutDragState,
+  useOrganicCutInteraction,
+  type OrganicCutInteraction,
+} from './useOrganicCutInteraction';
+import {
   computeGeodesicLoop,
   computeMembranePreview,
   computePlaneTenonPreview,
@@ -248,19 +253,8 @@ export interface UseOrganicCutSessionArgs {
   activeGeometry: THREE.BufferGeometry | null | undefined;
   /** Stable key identifying the current geometry, for source-stage caching. */
   activeGeometryKey: string | null;
-  /**
-   * True while a waypoint is being dragged. The membrane preview (heavy Rust
-   * round-trip) is suppressed during a drag and rebuilt once on release, so the
-   * drop feels snappy; the seam line still tracks the surface live (debounced).
-   */
-  isDraggingPoint?: boolean;
-  /**
-   * True while the drag above is the TENON's own — its base handle or one of its
-   * rings — rather than a seam waypoint. The tenon is drawn and moved locally for
-   * the whole gesture and Rust is asked once, on release; only a waypoint drag
-   * takes the cut face out from under it and makes the drawn tenon a lie.
-   */
-  isDraggingTenon?: boolean;
+  /** The model waypoints are placed on; a surface pick elsewhere is ignored. */
+  activeModelId: string | null;
   /**
    * Commit the split parts to the scene: replace the active model's geometry with
    * `parts[0]` and add `parts[1..]` as new independent models. A multi-loop cut may
@@ -271,7 +265,18 @@ export interface UseOrganicCutSessionArgs {
   commitParts?: (parts: THREE.BufferGeometry[]) => boolean;
 }
 
-export interface OrganicCutSession {
+export interface OrganicCutSession extends OrganicCutInteraction {
+  /**
+   * Whether the tenon's aim gizmo has anything to draw: there is a frame to sit
+   * on and the preview is showing. The host reads it to decide whether to mount
+   * the gizmo at all, because mounting it also turns on local clipping.
+   */
+  tenonGizmoVisible: boolean;
+  /** True while a waypoint or the tenon is being dragged (OrbitControls stays off). */
+  dragging: boolean;
+  /** True while that drag is the tenon's own rather than a seam waypoint's. */
+  draggingTenon: boolean;
+  onDragStateChange: (dragging: boolean, what?: 'seam' | 'tenon') => void;
   // Panel state
   panelState: OrganicCutPanelState;
   setPanelState: (next: OrganicCutPanelState) => void;
@@ -476,10 +481,14 @@ export function useOrganicCutSession({
   toolActive,
   activeGeometry,
   activeGeometryKey,
-  isDraggingPoint = false,
-  isDraggingTenon = false,
+  activeModelId,
   commitParts,
 }: UseOrganicCutSessionArgs): OrganicCutSession {
+  // Drag state is the session's own, and is declared first: the preview and
+  // undo-coalescing effects below read it, and they run before the waypoint
+  // commands the rest of the interaction is built on exist.
+  const drag = useOrganicCutDragState();
+  const { dragging: isDraggingPoint, draggingTenon: isDraggingTenon } = drag;
   const [panelState, setPanelState] = React.useState<OrganicCutPanelState>(DEFAULT_PANEL_STATE);
   // All loops of the current cut, plus which one is active (editable). The active
   // loop gets the full waypoint UI + membrane preview; the rest render as dimmed
@@ -1631,7 +1640,28 @@ export function useOrganicCutSession({
   const canRemoveLoop = loops.length > 1 && !isApplying;
   const canSnapToEdges = !!activeGeometry && pointCount > 0 && !isApplying;
 
+  // The pointer/keyboard half of the tool. Declared last because it is built on
+  // the waypoint commands above; folded into the session so the host sees one
+  // interface rather than a hook it has to wire together itself.
+  const interaction = useOrganicCutInteraction({
+    toolActive,
+    drag,
+    activeModelId,
+    selectedIndex,
+    addPoint,
+    insertPoint,
+    removePoint,
+    selectPoint,
+    panelState,
+    setPanelState: handleSetPanelState,
+  });
+
   return {
+    ...interaction,
+    tenonGizmoVisible: Boolean(tenonFrame) && panelState.showPreview,
+    dragging: drag.dragging,
+    draggingTenon: drag.draggingTenon,
+    onDragStateChange: drag.onDragStateChange,
     panelState,
     setPanelState: handleSetPanelState,
     loop,

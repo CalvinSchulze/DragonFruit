@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useLingui } from '@lingui/react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { refineCoarseFaces } from '@/utils/tauriMeshBridge';
 import { loadMeshGeometry, load3mfGeometryMergedWithSplitData, processGeometry, type GeometryWithBounds, type ProcessGeometryOptions } from '@/hooks/useStlGeometry';
 import type { MeshHealthReport, MeshAnalysisJson } from '@/utils/meshRepair';
 import { computeFlatteningPlanes, type FlatteningPlane } from '@/features/placeOnFace/logic/computeFlatteningPlanes';
@@ -16,12 +18,49 @@ import { getBuiltinComplexPluginFileTypeHandlers } from '@/features/plugins/buil
 import type { PluginFileTypeDefinition } from '@/features/plugins/complexPluginContracts';
 import type { PluginFileTypeHandler } from '@/features/plugins/pluginFileTypeBridge';
 import { accelerateGeometry, disposeGeometryBVH } from '@/utils/bvh';
+import { BAKED_OCCLUSION_ATTRIBUTE, DEFAULT_BAKED_OCCLUSION_INTENSITY, bakeOcclusionForGeometry, canBakeOcclusion, setBakedOcclusionIntensity } from '@/features/scene/bakedOcclusion';
 import { eulerFromGlobalEuler, quaternionFromGlobalEuler } from '@/utils/rotation';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  importDetailAutoRepairingFile,
+  importDetailAutoRepairingMesh,
+  importDetailClassifyingFile,
+  importDetailClassifyingMesh,
+  importDetailFinalizing,
+  importDetailFinalizingModel,
+  importDetailIndexedFile,
+  importDetailInspectingFile,
+  importDetailInspectingMesh,
+  importDetailLoadingFile,
+  importDetailPreparing,
+  importDetailPreparingGeometry,
+  importDetailProcessedCount,
+  importDetailRecombiningGeometry,
+  importDetailSeparatingGeometry,
+  importDetailVoxlAutoRepairing,
+  importDetailVoxlClassifying,
+  importDetailVoxlInspecting,
+  importDetailVoxlModel,
+  importLabelAutoRepairing,
+  importLabelClassifying,
+  importLabelFileType,
+  importLabelInspecting,
+  importLabelLoadingMesh,
+  importLabelMergingSupports,
+  importLabelScanningSupports,
+  importLabelScenes,
+  importLabelSplittingSupports,
+  importLabelVoxlScene,
+} from '@/features/scene/sceneImportMessages';
 import { registerMeshForAutoBrace, unregisterMeshForAutoBrace } from '@/supports/autoBracing/meshGeometryStore';
-import { getKickstandSnapshot, setKickstandSnapshot } from '@/supports/SupportTypes/Kickstand/kickstandStore';
-import type { KickstandState } from '@/supports/SupportTypes/Kickstand/types';
-import type { MatcapVariant, MeshShaderType } from '@/features/shaders/mesh';
+import { buildModelEdgeGeometry } from '@/hooks/useStlGeometry';
+import { MESH_SHADER_TYPES, type MatcapVariant, type MeshShaderType } from '@/features/shaders/mesh';
+import {
+  getSavedWorkspaceCameraSettings,
+  getWorkspaceCameraSettingsServerSnapshot,
+  getWorkspaceCameraSettingsSnapshot,
+  subscribeToWorkspaceCameraSettings,
+} from '@/components/settings/workspaceCameraPreferences';
 import {
   DEFAULT_VIEW3D_SETTINGS,
   getSavedView3DSettings,
@@ -41,6 +80,7 @@ import {
   getStoredMeshModifiers,
   storeModelMeshModifiers,
 } from '@/features/mesh-modifiers/meshModifierStore';
+import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
 import {
   applyModelGrouping,
@@ -51,31 +91,43 @@ import { performModelCut, selectModelsForClipboard } from '@/features/scene/mode
 
 type PersistedMeshAppearance = {
   v: 1;
+  /** The view mode the camera dropdown shows, which is also the shader the viewport renders. */
   shaderType: MeshShaderType;
+  /** The type the Mesh settings tab is configuring. Independent of what the viewport renders. */
+  configuredShaderType: MeshShaderType;
   matcapVariant: MatcapVariant;
   flatUseVertexColors: boolean;
-  toonSteps: number;
   ambientIntensity: number;
   directionalIntensity: number;
   materialRoughness: number;
+  /** Multiplier on the baked occlusion's strength; 0 disables the bake. */
+  bakedAoIntensity: number;
   wireframeThicknessPx: number;
   xrayOpacity: number;
   heatmapMinAngle: number;
   heatmapMaxAngle: number;
   heatmapColors: string[];
   meshColor: string;
-  selectionColor: string;
-  hoverColor: string;
   hoverTintStrength: number;
   selectedTintStrength: number;
 };
 
+/**
+ * Ambient-occlusion bakes in flight at once (see the scheduling comment in the
+ * bake effect). Each command is internally parallel across vertices, so this is
+ * about hiding the serial phases — weld, tree build, IPC — of one model behind
+ * another model's ray pass, not about using more cores per model.
+ */
+const AO_BAKE_CONCURRENCY = 2;
+
 const MESH_APPEARANCE_STORAGE_KEY = 'mesh-appearance-settings';
 
 const DEFAULT_MESH_COLOR = '#a3a3a3';
-const DEFAULT_AMBIENT_INTENSITY = 0.6;
-const DEFAULT_DIRECTIONAL_INTENSITY = 0.8;
-const DEFAULT_MATERIAL_ROUGHNESS = 0.65;
+// Split so the Mesh tab's derived sliders read Lightness 1.40, Contrast 0.80
+// (contrast = directional / (ambient + directional)).
+const DEFAULT_AMBIENT_INTENSITY = 0.28;
+const DEFAULT_DIRECTIONAL_INTENSITY = 1.12;
+const DEFAULT_MATERIAL_ROUGHNESS = 0.55;
 const DEFAULT_WIREFRAME_THICKNESS_PX = 1.5;
 const DEFAULT_XRAY_OPACITY = 0.25;
 const DEFAULT_HEATMAP_MIN_ANGLE = 0;
@@ -84,17 +136,14 @@ export const DEFAULT_HEATMAP_COLORS = ['#E55959', '#E5A559', '#D9D959', '#73D973
 const DEFAULT_SHADER_TYPE: MeshShaderType = 'soft_clay';
 const DEFAULT_MATCAP_VARIANT: MatcapVariant = 'neutral';
 const DEFAULT_FLAT_USE_VERTEX_COLORS = true;
-const DEFAULT_TOON_STEPS = 5;
-export const DEFAULT_SELECTION_COLOR = '#ec2a77';
-export const DEFAULT_HOVER_COLOR = '#ec2a77';
 export const DEFAULT_HOVER_TINT_STRENGTH = 0.5;
-export const DEFAULT_SELECTED_TINT_STRENGTH = 0.75;
+export const DEFAULT_SELECTED_TINT_STRENGTH = 0.70;
 const RECENT_OPENED_FILES_STORAGE_KEY = 'app-recent-opened-files';
 const RECENT_OPENED_FILES_LIMIT = 10;
 const RECENT_FILES_DB_NAME = 'dragonfruit-recent-files';
 const RECENT_FILES_DB_VERSION = 1;
 const RECENT_FILES_STORE_NAME = 'files';
-const SCENE_MODELS_SNAPSHOT_APPLY = 'scene_models_snapshot_apply' as const;
+export const SCENE_MODELS_SNAPSHOT_APPLY = 'scene_models_snapshot_apply' as const;
 // A marker pushed after a slice so change-detection can tell whether the scene
 // was edited since. It carries no undo behaviour, but it still lands on the undo
 // stack, so it must have a (pass-through) handler — otherwise undoing onto it
@@ -107,7 +156,7 @@ const SCENE_HISTORY_MAX_SNAPSHOTS = 200;
 // flat count cap alone can leave a lot of stale geometry pinned alive.
 const SCENE_HISTORY_MAX_ESTIMATED_GEOMETRY_BYTES = 300 * 1024 * 1024;
 
-type SceneSnapshotPayload = { key: string };
+type SceneSnapshotPayload = { key: string; modelId?: string };
 
 /** Action→payload map for the scene history domain. */
 type SceneHistoryPayloadMap = {
@@ -126,20 +175,17 @@ type SceneSnapshot = {
   activeModelId: string | null;
   selectedModelIds: string[];
   supportState?: SupportState;
-  kickstandState?: KickstandState;
+  modifierRecord?: { modelId: string; modifiers: ModelMeshModifiers | undefined };
 };
 
 type SceneSnapshotCaptureOptions = {
   includeSupportState?: boolean;
   supportStateOverride?: SupportState;
-  kickstandStateOverride?: KickstandState;
 };
 
 type TransformHistorySupportSnapshotOptions = {
   supportBefore?: SupportState;
   supportAfter?: SupportState;
-  kickstandBefore?: KickstandState;
-  kickstandAfter?: KickstandState;
   includeSupportState?: boolean;
 };
 
@@ -198,6 +244,26 @@ function cloneMeshModifiersShallow(modifiers: ModelMeshModifiers): ModelMeshModi
   };
 }
 
+function cloneMeshModifiersForHistory(modifiers: ModelMeshModifiers | null | undefined): ModelMeshModifiers | undefined {
+  if (!modifiers) return undefined;
+  const hollowing = modifiers.hollowing;
+  const clonePlacements = (placements: typeof modifiers.holePunches) => placements?.map((placement) => ({
+    ...placement,
+    centerNorm: placement.centerNorm.slice() as typeof placement.centerNorm,
+    direction: placement.direction.slice() as typeof placement.direction,
+  }));
+  return {
+    ...modifiers,
+    hollowing: hollowing ? {
+      ...hollowing,
+      blockedVoxelIndices: hollowing.blockedVoxelIndices?.slice(),
+      blockedVoxelRotationQuat: hollowing.blockedVoxelRotationQuat?.slice() as typeof hollowing.blockedVoxelRotationQuat,
+    } : hollowing,
+    holePunches: clonePlacements(modifiers.holePunches),
+    holePunchAppliedPlacements: clonePlacements(modifiers.holePunchAppliedPlacements),
+  };
+}
+
 // ── External Mesh Modifier Store ─────────────────────────────────────────
 //
 // Model mesh modifiers (especially the MB-scale cavityPositionsBase64 /
@@ -219,13 +285,6 @@ function schedulePostPaint(callback: () => void): void {
 
 // ─────────────────────────────────────────────────────────────────────────
 
-function clonePlainObject<T>(value: T): T {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value) as T;
-  }
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
 function captureSceneSnapshot(
   models: LoadedModel[],
   activeModelId: string | null,
@@ -234,7 +293,6 @@ function captureSceneSnapshot(
 ): SceneSnapshot {
   const includeSupportState = options?.includeSupportState ?? false;
   const supportStateOverride = options?.supportStateOverride;
-  const kickstandStateOverride = options?.kickstandStateOverride;
 
   return {
     models: models.map(cloneLoadedModel),
@@ -242,29 +300,16 @@ function captureSceneSnapshot(
     selectedModelIds: [...selectedModelIds],
     ...(includeSupportState
       ? {
-          supportState: clonePlainObject(supportStateOverride ?? getSnapshot()),
-          kickstandState: clonePlainObject(kickstandStateOverride ?? getKickstandSnapshot()),
+          supportState: clonePlainData(supportStateOverride ?? getSnapshot()),
         }
       : {}),
   };
 }
 
-function hasSupportsOrKickstandsForModel(
-  modelId: string,
-  supportState: SupportState,
-  kickstandState: KickstandState,
-): boolean {
+/** Whether any support entity of any type belongs to this model. */
+function hasSupportsForModel(modelId: string, supportState: SupportState): boolean {
   const supportIds = getSupportsForModel(supportState, modelId);
-  const hasMainSupports = supportIds.roots.length > 0
-    || supportIds.trunks.length > 0
-    || supportIds.branches.length > 0
-    || supportIds.braces.length > 0
-    || supportIds.leaves.length > 0
-    || supportIds.twigs.length > 0
-    || supportIds.sticks.length > 0;
-  if (hasMainSupports) return true;
-
-  return Object.values(kickstandState.kickstands).some((kickstand) => kickstand.modelId === modelId);
+  return Object.values(supportIds).some((ids) => ids.length > 0);
 }
 
 function estimateGeometryBytes(geometry: THREE.BufferGeometry): number {
@@ -380,12 +425,8 @@ function clampMatcapVariant(input: unknown, fallback: MatcapVariant): MatcapVari
 }
 
 function clampPersistedMeshShaderType(input: unknown, fallback: MeshShaderType): MeshShaderType {
-  return input === 'soft_clay'
-    || input === 'toon'
-    || input === 'normal_debug'
-    || input === 'wireframe'
-    || input === 'xray'
-    ? input
+  return typeof input === 'string' && (MESH_SHADER_TYPES as readonly string[]).includes(input)
+    ? (input as MeshShaderType)
     : fallback;
 }
 
@@ -412,20 +453,19 @@ function readMeshAppearanceFromLocalStorage(): PersistedMeshAppearance | null {
     return {
       v: 1,
       shaderType,
+      configuredShaderType: clampPersistedMeshShaderType(parsed.configuredShaderType ?? parsed.shaderType, DEFAULT_SHADER_TYPE),
       matcapVariant: clampMatcapVariant(parsed.matcapVariant, DEFAULT_MATCAP_VARIANT),
       flatUseVertexColors: clampBoolean(parsed.flatUseVertexColors, DEFAULT_FLAT_USE_VERTEX_COLORS),
-      toonSteps: clampInt(parsed.toonSteps, 2, 16, DEFAULT_TOON_STEPS),
       ambientIntensity: clampNumber(parsed.ambientIntensity, 0, 4, DEFAULT_AMBIENT_INTENSITY),
       directionalIntensity: clampNumber(parsed.directionalIntensity, 0, 4, DEFAULT_DIRECTIONAL_INTENSITY),
       materialRoughness: clampNumber(parsed.materialRoughness, 0, 1, DEFAULT_MATERIAL_ROUGHNESS),
+      bakedAoIntensity: clampNumber(parsed.bakedAoIntensity, 0, 2, DEFAULT_BAKED_OCCLUSION_INTENSITY),
       wireframeThicknessPx: clampNumber(parsed.wireframeThicknessPx, 0.5, 6, DEFAULT_WIREFRAME_THICKNESS_PX),
       xrayOpacity: clampNumber(parsed.xrayOpacity, 0.02, 0.85, DEFAULT_XRAY_OPACITY),
       heatmapMinAngle: clampNumber(parsed.heatmapMinAngle, 0, 90, DEFAULT_HEATMAP_MIN_ANGLE),
       heatmapMaxAngle: clampNumber(parsed.heatmapMaxAngle, 0, 90, DEFAULT_HEATMAP_MAX_ANGLE),
       heatmapColors: Array.isArray(parsed.heatmapColors) && parsed.heatmapColors.length === 5 ? parsed.heatmapColors : DEFAULT_HEATMAP_COLORS,
       meshColor: clampHexColor(parsed.meshColor, DEFAULT_MESH_COLOR),
-      selectionColor: clampHexColor(parsed.selectionColor, DEFAULT_SELECTION_COLOR),
-      hoverColor: clampHexColor(parsed.hoverColor, DEFAULT_HOVER_COLOR),
       hoverTintStrength: clampNumber(parsed.hoverTintStrength, 0, 1, DEFAULT_HOVER_TINT_STRENGTH),
       selectedTintStrength: clampNumber(parsed.selectedTintStrength, 0, 1, DEFAULT_SELECTED_TINT_STRENGTH),
     };
@@ -732,30 +772,20 @@ function remapModelIdsInPayload<T>(value: T, idMap: Map<string, string>): T {
   return visit(value) as T;
 }
 
+/** Whether a serialized scene carries any support at all. */
 function voxlSupportsContainData(document: VoxlDocumentV1): boolean {
-  const supports = document.supports;
-  return supports.roots.length > 0
-    || supports.trunks.length > 0
-    || supports.branches.length > 0
-    || supports.leaves.length > 0
-    || (supports.twigs?.length ?? 0) > 0
-    || (supports.sticks?.length ?? 0) > 0
-    || supports.braces.length > 0
-    || supports.knots.length > 0
-    || (supports.kickstands?.length ?? 0) > 0;
+  return payloadCollections(document.supports).some((entities) => entities.length > 0);
+}
+
+/** A payload's collections as arrays, keyed by the registry's collection names. */
+function payloadCollections(payload: DragonfruitImportFormat): unknown[][] {
+  const record = payload as unknown as Record<string, unknown[] | undefined>;
+  return SUPPORT_COLLECTION_KEYS.map((key) => record[key] ?? []);
 }
 
 function countSupportEntries(payload: DragonfruitImportFormat | null | undefined): number {
   if (!payload) return 0;
-  return payload.roots.length
-    + payload.trunks.length
-    + payload.branches.length
-    + payload.leaves.length
-    + (payload.twigs?.length ?? 0)
-    + (payload.sticks?.length ?? 0)
-    + payload.braces.length
-    + payload.knots.length
-    + (payload.kickstands?.length ?? 0);
+  return payloadCollections(payload).reduce((total, entities) => total + entities.length, 0);
 }
 
 function applyImportDefaultsToRaftState() {
@@ -775,6 +805,13 @@ type PluginSceneImportPayload = {
     scale: THREE.Vector3;
   };
   modelId?: string;
+  /**
+   * Display name from the SOURCE file, where the format carries one (LYS object
+   * `name`, Chitubox per-model filename). Preferred over deriving a name from
+   * the imported filename, which cannot distinguish models inside one container
+   * and falls back to numeric suffixes ("project (2)", "project (3)").
+   */
+  objName?: string;
   supportData?: DragonfruitImportFormat | null;
   meshModifiers?: ModelMeshModifiers;
 };
@@ -828,9 +865,13 @@ function asDragonfruitImportFormat(value: unknown): DragonfruitImportFormat | nu
     return null;
   }
 
-  if (candidate.twigs != null && !Array.isArray(candidate.twigs)) return null;
-  if (candidate.sticks != null && !Array.isArray(candidate.sticks)) return null;
-  if (candidate.kickstands != null && !Array.isArray(candidate.kickstands)) return null;
+  // Every optional collection the registry declares; the required ones are
+  // checked above.
+  const collections = candidate as unknown as Record<string, unknown>;
+  for (const key of SUPPORT_COLLECTION_KEYS) {
+    const value = collections[key];
+    if (value != null && !Array.isArray(value)) return null;
+  }
 
   return candidate as DragonfruitImportFormat;
 }
@@ -842,6 +883,7 @@ function normalizePluginSceneImportPayload(payload: unknown): PluginSceneImportP
     geometry?: unknown;
     transform?: unknown;
     modelId?: unknown;
+    objName?: unknown;
     supportData?: unknown;
     meshModifiers?: unknown;
   };
@@ -877,6 +919,9 @@ function normalizePluginSceneImportPayload(payload: unknown): PluginSceneImportP
     modelId: typeof source.modelId === 'string' && source.modelId.trim().length > 0
       ? source.modelId
       : undefined,
+    objName: typeof source.objName === 'string' && source.objName.trim().length > 0
+      ? source.objName.trim()
+      : undefined,
     supportData: asDragonfruitImportFormat(source.supportData),
     meshModifiers,
   };
@@ -907,6 +952,10 @@ export interface LoadedModel {
   manualZMoveOverride?: boolean;
   isSupportGeometry?: boolean;
   linkGroupId?: string;
+  /** Bumped when the background bake attaches `aBakedAo` to this model's
+   *  geometry. `StlMesh` is memoised on props and the geometry object keeps its
+   *  identity, so this counter is what tells the material to start using it. */
+  bakedAoVersion?: number;
 }
 
 type DebugPrimitiveType =
@@ -919,11 +968,13 @@ type DebugPrimitiveType =
 
 type DebugPrimitiveSizePreset = 'small' | 'medium' | 'large';
 
-import { deleteSupportsForModel, getSupportsForModel } from '@/supports/PlacementLogic/SupportModelLinker';
+import { deleteSupportsForModel, getSupportsForModel, type ModelSupportIds } from '@/supports/PlacementLogic/SupportModelLinker';
+import { contactEndpointsFor, MODEL_ID_COLLECTION_KEYS, SUPPORT_COLLECTION_KEYS, SUPPORT_TYPES } from '@/supports/supportTypeRegistry';
 import { beginSupportStateBatch, endSupportStateBatch } from '@/supports/state';
 import {
   captureModelSupportsToClipboard,
   estimateSupportBoundsForModel,
+  pasteModelSupports,
   pasteModelSupportsFromClipboard,
   type SupportClipboardPayload,
 } from '@/supports/PlacementLogic/supportClipboard';
@@ -932,9 +983,10 @@ import { getRaftSettings, updateRaftSettings, applyImportDefaultRaftSettings, re
 import { computeFootprint } from '@/supports/Rafts/Crenelated/geometry/computeFootprint';
 import { computeRaftOuterBoundary } from '@/supports/Rafts/Crenelated/geometry/computeRaftOuterBoundary';
 import type { SupportBaseCircle } from '@/supports/Rafts/Crenelated/RaftTypes';
-import { beginKickstandStoreBatch, endKickstandStoreBatch } from '@/supports/SupportTypes/Kickstand/kickstandStore';
 import { getImportDefaultsRaftPatch, getSavedImportDefaultsSettings } from '@/features/scene/importDefaultsPreferences';
 import { readNativeFileSize } from '@/utils/pluginNetworkBridge';
+import { clonePlainData } from '@/utils/plainDataClone';
+import { DEFAULT_LIFT_DISTANCE_MM } from '@/features/transform/liftDefaults';
 
 type ImportProgressState = {
   active: boolean;
@@ -1002,6 +1054,10 @@ type ModelClipboardEntry = {
   supportClipboard: SupportClipboardPayload | null;
   isSupportGeometry?: boolean;
   linkGroupId?: string;
+  /** Bumped when the background bake attaches `aBakedAo` to this model's
+   *  geometry. `StlMesh` is memoised on props and the geometry object keeps its
+   *  identity, so this counter is what tells the material to start using it. */
+  bakedAoVersion?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1140,8 @@ function scheduleChunkStoreSweep(getModels: () => LoadedModel[]): void {
 }
 
 export function useSceneCollectionManager() {
+  const { _ } = useLingui();
+
   type ScenePluginImportEntry = {
     pluginId: string;
     fileType: PluginFileTypeDefinition;
@@ -1195,6 +1253,9 @@ export function useSceneCollectionManager() {
   // Count of scheduled-but-unfinished flattening-plane computations (idle
   // callbacks after geometry swaps). Part of hasPendingBackgroundGeometryWork.
   const pendingFlatteningPlanesRef = useRef(0);
+  // Models whose AO volume bake is queued or awaiting the native round trip.
+  // Part of hasPendingBackgroundGeometryWork.
+  const pendingAoBakeRef = useRef(0);
   const trackedGeometriesRef = useRef<Set<THREE.BufferGeometry>>(new Set());
 
   const tryRevokeObjectUrl = useCallback((url: string) => {
@@ -1499,20 +1560,28 @@ export function useSceneCollectionManager() {
   const [ambientIntensity, setAmbientIntensity] = useState<number>(DEFAULT_AMBIENT_INTENSITY);
   const [directionalIntensity, setDirectionalIntensity] = useState<number>(DEFAULT_DIRECTIONAL_INTENSITY);
   const [materialRoughness, setMaterialRoughness] = useState<number>(DEFAULT_MATERIAL_ROUGHNESS);
+  const [bakedAoIntensity, setBakedAoIntensity] = useState<number>(DEFAULT_BAKED_OCCLUSION_INTENSITY);
+
+  // Geometry prep runs outside React and bakes before a model reaches the scene,
+  // so it reads the intensity from the module rather than from this state.
+  useEffect(() => {
+    setBakedOcclusionIntensity(bakedAoIntensity);
+  }, [bakedAoIntensity]);
 
   // Shader-specific settings (Global)
   const [shaderType, setShaderType] = useState<MeshShaderType>(DEFAULT_SHADER_TYPE);
+  // What the Mesh settings tab edits. Deliberately separate from shaderType:
+  // the camera dropdown owns what the viewport renders, the settings tab owns
+  // which type's options it is showing.
+  const [configuredShaderType, setConfiguredShaderType] = useState<MeshShaderType>(DEFAULT_SHADER_TYPE);
   const [matcapVariant, setMatcapVariant] = useState<MatcapVariant>(DEFAULT_MATCAP_VARIANT);
   const [flatUseVertexColors, setFlatUseVertexColors] = useState<boolean>(DEFAULT_FLAT_USE_VERTEX_COLORS);
-  const [toonSteps, setToonSteps] = useState<number>(DEFAULT_TOON_STEPS);
   const [wireframeThicknessPx, setWireframeThicknessPx] = useState<number>(DEFAULT_WIREFRAME_THICKNESS_PX);
   const [xrayOpacity, setXrayOpacity] = useState<number>(DEFAULT_XRAY_OPACITY);
   const [heatmapMinAngle, setHeatmapMinAngle] = useState<number>(DEFAULT_HEATMAP_MIN_ANGLE);
   const [heatmapMaxAngle, setHeatmapMaxAngle] = useState<number>(DEFAULT_HEATMAP_MAX_ANGLE);
   const [heatmapColors, setHeatmapColors] = useState<string[]>(DEFAULT_HEATMAP_COLORS);
   const [preferredMeshColor, setPreferredMeshColor] = useState<string>(DEFAULT_MESH_COLOR);
-  const [selectionColor, setSelectionColor] = useState<string>(DEFAULT_SELECTION_COLOR);
-  const [hoverColor, setHoverColor] = useState<string>(DEFAULT_HOVER_COLOR);
   const [hoverTintStrength, setHoverTintStrength] = useState<number>(DEFAULT_HOVER_TINT_STRENGTH);
   const [selectedTintStrength, setSelectedTintStrength] = useState<number>(DEFAULT_SELECTED_TINT_STRENGTH);
   const [storedView3dSettings, setView3dSettingsState] = useState<View3DSettings>(() => DEFAULT_VIEW3D_SETTINGS);
@@ -1545,20 +1614,19 @@ export function useSceneCollectionManager() {
     const persistedAppearance = readMeshAppearanceFromLocalStorage();
     if (persistedAppearance) {
       setShaderType(persistedAppearance.shaderType);
+      setConfiguredShaderType(persistedAppearance.configuredShaderType);
       setMatcapVariant(persistedAppearance.matcapVariant);
       setFlatUseVertexColors(persistedAppearance.flatUseVertexColors);
-      setToonSteps(persistedAppearance.toonSteps);
       setAmbientIntensity(persistedAppearance.ambientIntensity);
       setDirectionalIntensity(persistedAppearance.directionalIntensity);
       setMaterialRoughness(persistedAppearance.materialRoughness);
+      setBakedAoIntensity(persistedAppearance.bakedAoIntensity);
       setWireframeThicknessPx(persistedAppearance.wireframeThicknessPx);
       setXrayOpacity(persistedAppearance.xrayOpacity);
       setHeatmapMinAngle(persistedAppearance.heatmapMinAngle ?? DEFAULT_HEATMAP_MIN_ANGLE);
       setHeatmapMaxAngle(persistedAppearance.heatmapMaxAngle ?? DEFAULT_HEATMAP_MAX_ANGLE);
       setHeatmapColors(persistedAppearance.heatmapColors ?? DEFAULT_HEATMAP_COLORS);
       setPreferredMeshColor(persistedAppearance.meshColor);
-      setSelectionColor(persistedAppearance.selectionColor ?? DEFAULT_SELECTION_COLOR);
-      setHoverColor(persistedAppearance.hoverColor ?? DEFAULT_HOVER_COLOR);
       setHoverTintStrength(persistedAppearance.hoverTintStrength);
       setSelectedTintStrength(persistedAppearance.selectedTintStrength);
     }
@@ -1566,6 +1634,48 @@ export function useSceneCollectionManager() {
     setRecentOpenedFiles(readRecentOpenedFilesFromLocalStorage());
     setView3dSettingsState(getSavedView3DSettings());
   }, []);
+
+  // The whole appearance record is persisted whenever any of it changes, so
+  // settings survive a reload: the view mode the camera dropdown picks, the
+  // type the Mesh tab is configuring, and every parameter either of them edits.
+  useEffect(() => {
+    writeMeshAppearanceToLocalStorage({
+      v: 1,
+      shaderType,
+      configuredShaderType,
+      matcapVariant,
+      flatUseVertexColors,
+      ambientIntensity,
+      directionalIntensity,
+      materialRoughness,
+      bakedAoIntensity,
+      wireframeThicknessPx,
+      xrayOpacity,
+      heatmapMinAngle,
+      heatmapMaxAngle,
+      heatmapColors,
+      meshColor: preferredMeshColor,
+      hoverTintStrength,
+      selectedTintStrength,
+    });
+  }, [
+    shaderType,
+    configuredShaderType,
+    matcapVariant,
+    flatUseVertexColors,
+    ambientIntensity,
+    directionalIntensity,
+    materialRoughness,
+    bakedAoIntensity,
+    wireframeThicknessPx,
+    xrayOpacity,
+    heatmapMinAngle,
+    heatmapMaxAngle,
+    heatmapColors,
+    preferredMeshColor,
+    hoverTintStrength,
+    selectedTintStrength,
+  ]);
 
   const setView3dSettings = useCallback((next: View3DSettings) => {
     const normalized = normalizeView3DSettings(next);
@@ -1804,16 +1914,19 @@ export function useSceneCollectionManager() {
   }, [buildMeshPlacementOffsets, defaultImportCenterXY.x, defaultImportCenterXY.y, estimateSupportBoundsForModel, intersectsRect, isRectInsidePlate, view3dSettings.depthMm, view3dSettings.originMode, view3dSettings.widthMm]);
 
   const applySceneSnapshot = useCallback((snapshot: SceneSnapshot) => {
+    if (snapshot.modifierRecord) {
+      storeModelMeshModifiers(snapshot.modifierRecord.modelId, cloneMeshModifiersForHistory(snapshot.modifierRecord.modifiers));
+      clearPreparedGeometryCacheForModel(snapshot.modifierRecord.modelId);
+    }
     setModels(snapshot.models.map(cloneLoadedModel));
     setActiveModelId(snapshot.activeModelId);
     setSelectedModelIds([...snapshot.selectedModelIds]);
 
+    // setSupportSnapshot restores kickstands with everything else -- they are
+    // ordinary SupportState collections, and their roots and host knots ride in
+    // `roots` and `knots`.
     if (snapshot.supportState) {
-      setSupportSnapshot(clonePlainObject(snapshot.supportState));
-    }
-
-    if (snapshot.kickstandState) {
-      setKickstandSnapshot(clonePlainObject(snapshot.kickstandState));
+      setSupportSnapshot(clonePlainData(snapshot.supportState));
     }
   }, []);
 
@@ -1842,12 +1955,12 @@ export function useSceneCollectionManager() {
     };
   }, [applySceneSnapshot]);
 
-  const pushSceneSnapshotHistory = useCallback((before: SceneSnapshot, after: SceneSnapshot, description?: string) => {
+  const pushSceneSnapshotHistory = useCallback((before: SceneSnapshot, after: SceneSnapshot, description?: string, modelId?: string) => {
     const key = storeSceneSnapshotPair({ before, after });
     sceneHistory.push({
       type: SCENE_MODELS_SNAPSHOT_APPLY,
       description,
-      payload: { key },
+      payload: { key, ...(modelId ? { modelId } : {}) },
     });
   }, []);
 
@@ -1961,7 +2074,8 @@ export function useSceneCollectionManager() {
 
   /**
    * True while deferred post-swap geometry work (BVH acceleration builds,
-   * deferred geometry disposals, flattening-plane computation) is queued or
+   * deferred geometry disposals, flattening-plane computation, AO bakes) is
+   * queued or
    * running. Lets the UI keep a blocking "finalizing" indicator visible
    * until the app is genuinely responsive again after a large geometry swap
    * — the swap itself resolves long before this work drains.
@@ -1972,6 +2086,7 @@ export function useSceneCollectionManager() {
     || deferredDisposalQueueRef.current.length > 0
     || deferredDisposalProcessingRef.current
     || pendingFlatteningPlanesRef.current > 0
+    || pendingAoBakeRef.current > 0
   ), []);
 
   const processDeferredDisposalQueue = useCallback(() => {
@@ -2164,8 +2279,8 @@ export function useSceneCollectionManager() {
     setImportProgress({
       active: true,
       type: 'mesh',
-      label: files.length > 1 ? 'Loading Mesh Files…' : 'Loading Mesh…',
-      detail: files.length > 1 ? `Preparing 0/${files.length}` : 'Preparing Geometry…',
+      label: importLabelLoadingMesh(files.length, _),
+      detail: files.length > 1 ? importDetailPreparing(0, files.length, _) : importDetailPreparingGeometry(_),
       progress: null,
     });
 
@@ -2192,7 +2307,7 @@ export function useSceneCollectionManager() {
 
     // Read auto-lift settings from storage (mirroring useTransformManager logic)
     let autoLift = false;
-    let liftDistance = 5;
+    let liftDistance = DEFAULT_LIFT_DISTANCE_MM;
     let preferredMeshColor = DEFAULT_MESH_COLOR;
     if (typeof window !== 'undefined') {
       try {
@@ -2220,10 +2335,10 @@ export function useSceneCollectionManager() {
         setImportProgress({
           active: true,
           type: 'mesh',
-          label: files.length > 1 ? 'Loading Mesh Files…' : 'Loading Mesh…',
+          label: importLabelLoadingMesh(files.length, _),
           detail: files.length > 1
-            ? `${i + 1}/${files.length}: ${file.name}`
-            : `Loading ${file.name}`,
+            ? importDetailIndexedFile(i + 1, files.length, file.name, _)
+            : importDetailLoadingFile(file.name, _),
           progress: null,
         });
 
@@ -2241,10 +2356,10 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'mesh',
-                  label: files.length > 1 ? 'Auto-Repairing Meshes…' : 'Auto-Repairing Mesh…',
+                  label: importLabelAutoRepairing(files.length, _),
                   detail: files.length > 1
-                    ? `${i + 1}/${files.length}: ${file.name}`
-                    : `Auto-Repairing ${file.name}`,
+                    ? importDetailIndexedFile(i + 1, files.length, file.name, _)
+                    : importDetailAutoRepairingFile(file.name, _),
                   progress: null,
                 });
                 return;
@@ -2254,10 +2369,10 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'mesh',
-                  label: files.length > 1 ? 'Inspecting Meshes…' : 'Inspecting Mesh…',
+                  label: importLabelInspecting(files.length, _),
                   detail: files.length > 1
-                    ? `${i + 1}/${files.length}: ${file.name}`
-                    : `Inspecting ${file.name}`,
+                    ? importDetailIndexedFile(i + 1, files.length, file.name, _)
+                    : importDetailInspectingFile(file.name, _),
                   progress: null,
                 });
                 return;
@@ -2267,10 +2382,10 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'mesh',
-                  label: files.length > 1 ? 'Classifying Mesh Shells…' : 'Classifying Mesh Shell…',
+                  label: importLabelClassifying(files.length, _),
                   detail: files.length > 1
-                    ? `${i + 1}/${files.length}: ${file.name}`
-                    : `Classifying ${file.name}`,
+                    ? importDetailIndexedFile(i + 1, files.length, file.name, _)
+                    : importDetailClassifyingFile(file.name, _),
                   progress: null,
                 });
               }
@@ -2284,10 +2399,10 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'mesh',
-                  label: files.length > 1 ? 'Auto-Repairing Meshes…' : 'Auto-Repairing Mesh…',
+                  label: importLabelAutoRepairing(files.length, _),
                   detail: files.length > 1
-                    ? `${i + 1}/${files.length}: ${file.name}`
-                    : `Auto-Repairing ${file.name}`,
+                    ? importDetailIndexedFile(i + 1, files.length, file.name, _)
+                    : importDetailAutoRepairingFile(file.name, _),
                   progress: null,
                 });
               }
@@ -2403,10 +2518,10 @@ export function useSceneCollectionManager() {
         setImportProgress({
           active: true,
           type: 'mesh',
-          label: files.length > 1 ? 'Loading Mesh Files…' : 'Loading Mesh…',
+          label: importLabelLoadingMesh(files.length, _),
           detail: files.length > 1
-            ? `${Math.min(i + 1, files.length)}/${files.length} processed`
-            : 'Finalizing Model…',
+            ? importDetailProcessedCount(Math.min(i + 1, files.length), files.length, _)
+            : importDetailFinalizingModel(_),
           progress: null,
         });
       }
@@ -2449,7 +2564,7 @@ export function useSceneCollectionManager() {
         progress: null,
       });
     }
-  }, [defaultImportCenterXY.x, defaultImportCenterXY.y, emitSceneImportReport, findFreeSpotCentersForModels, getMeshExtension, requestMeshRepairConfirmation, trackRecentOpenedFiles, waitForUiYield]);
+  }, [_, defaultImportCenterXY.x, defaultImportCenterXY.y, emitSceneImportReport, findFreeSpotCentersForModels, getMeshExtension, requestMeshRepairConfirmation, trackRecentOpenedFiles, waitForUiYield]);
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -2607,13 +2722,11 @@ export function useSceneCollectionManager() {
     const includeSupportByOption = supportSnapshotOptions?.includeSupportState === true
       || !!supportSnapshotOptions?.supportBefore
       || !!supportSnapshotOptions?.supportAfter
-      || !!supportSnapshotOptions?.kickstandBefore
-      || !!supportSnapshotOptions?.kickstandAfter;
+;
 
     const includeSupportByState = (() => {
       const supportStateNow = getSnapshot();
-      const kickstandStateNow = getKickstandSnapshot();
-      return hasSupportsOrKickstandsForModel(id, supportStateNow, kickstandStateNow);
+      return hasSupportsForModel(id, supportStateNow);
     })();
 
     const includeSupportHistory = includeSupportByOption || includeSupportByState;
@@ -2621,12 +2734,10 @@ export function useSceneCollectionManager() {
     const before = captureSceneSnapshot(beforeModels, currentActiveModelId, currentSelectedModelIds, {
       includeSupportState: includeSupportHistory,
       supportStateOverride: supportSnapshotOptions?.supportBefore,
-      kickstandStateOverride: supportSnapshotOptions?.kickstandBefore,
     });
     const after = captureSceneSnapshot(afterModels, currentActiveModelId, currentSelectedModelIds, {
       includeSupportState: includeSupportHistory,
       supportStateOverride: supportSnapshotOptions?.supportAfter,
-      kickstandStateOverride: supportSnapshotOptions?.kickstandAfter,
     });
     const targetModelName = targetModel.name ?? id;
     pushSceneSnapshotHistory(before, after, description ?? `Transform Model ${targetModelName}`);
@@ -2658,25 +2769,18 @@ export function useSceneCollectionManager() {
     });
     const includeSupportByOption = supportSnapshotOptions?.includeSupportState === true
       || !!supportSnapshotOptions?.supportBefore
-      || !!supportSnapshotOptions?.supportAfter
-      || !!supportSnapshotOptions?.kickstandBefore
-      || !!supportSnapshotOptions?.kickstandAfter;
+      || !!supportSnapshotOptions?.supportAfter;
     const supportStateNow = getSnapshot();
-    const kickstandStateNow = getKickstandSnapshot();
-    const includeSupportByState = changedIds.some((id) => (
-      hasSupportsOrKickstandsForModel(id, supportStateNow, kickstandStateNow)
-    ));
+    const includeSupportByState = changedIds.some((id) => hasSupportsForModel(id, supportStateNow));
     const includeSupportHistory = includeSupportByOption || includeSupportByState;
 
     const before = captureSceneSnapshot(beforeModels, currentActiveModelId, currentSelectedModelIds, {
       includeSupportState: includeSupportHistory,
       supportStateOverride: supportSnapshotOptions?.supportBefore,
-      kickstandStateOverride: supportSnapshotOptions?.kickstandBefore,
     });
     const after = captureSceneSnapshot(currentModels, currentActiveModelId, currentSelectedModelIds, {
       includeSupportState: includeSupportHistory,
       supportStateOverride: supportSnapshotOptions?.supportAfter,
-      kickstandStateOverride: supportSnapshotOptions?.kickstandAfter,
     });
     pushSceneSnapshotHistory(before, after, description ?? 'Update Model Transforms');
     return true;
@@ -2734,16 +2838,14 @@ export function useSceneCollectionManager() {
     });
 
     const supportStateBefore = getSnapshot();
-    const kickstandStateBefore = getKickstandSnapshot();
     const allUpdatedIds = Array.from(updateMap.keys());
-    const includeSupportHistory = allUpdatedIds.some((id) => hasSupportsOrKickstandsForModel(id, supportStateBefore, kickstandStateBefore));
+    const includeSupportHistory = allUpdatedIds.some((id) => hasSupportsForModel(id, supportStateBefore));
 
     const shouldPushHistory = options?.pushHistory !== false;
     const before = shouldPushHistory
       ? captureSceneSnapshot(currentModels, currentActiveModelId, currentSelectedModelIds, {
           includeSupportState: includeSupportHistory,
           supportStateOverride: includeSupportHistory ? supportStateBefore : undefined,
-          kickstandStateOverride: includeSupportHistory ? kickstandStateBefore : undefined,
         })
       : null;
 
@@ -2778,11 +2880,9 @@ export function useSceneCollectionManager() {
 
     if (shouldPushHistory && before) {
       const supportStateAfter = includeSupportHistory ? getSnapshot() : undefined;
-      const kickstandStateAfter = includeSupportHistory ? getKickstandSnapshot() : undefined;
       const after = captureSceneSnapshot(nextModels, currentActiveModelId, currentSelectedModelIds, {
         includeSupportState: includeSupportHistory,
         supportStateOverride: supportStateAfter,
-        kickstandStateOverride: kickstandStateAfter,
       });
       pushSceneSnapshotHistory(before, after, updates.length === 1 ? 'Update Model Transform' : 'Update Model Transforms');
     }
@@ -2798,7 +2898,7 @@ export function useSceneCollectionManager() {
     id: string,
     nextBufferGeometry: THREE.BufferGeometry,
     historyDescription: string,
-    options?: { includeSupportState?: boolean; deferPostProcessing?: boolean },
+    options?: { includeSupportState?: boolean; deferPostProcessing?: boolean; meshModifiersAfter?: ModelMeshModifiers | null; meshModifiersBefore?: ModelMeshModifiers | null },
   ) => {
     const currentModels = modelsRef.current;
     const currentActiveModelId = activeModelIdRef.current;
@@ -2813,33 +2913,12 @@ export function useSceneCollectionManager() {
     const center = bbox.getCenter(new THREE.Vector3());
     const size = bbox.getSize(new THREE.Vector3());
 
-    // Recompute edge geometry for the Higher Contrast Model Edges overlay when
-    // the geometry has changed (e.g. after hole punch / hollowing).  Compute it
-    // only if the old geometry had one (i.e. the user has edge lines enabled),
-    // and skip during deferred post-processing to avoid blocking the UI.
-    // Skip for very large meshes — EdgesGeometry uses `for...in` over a hash map
-    // of unique edges and V8 throws "Too many properties to enumerate" beyond ~2M entries.
-    const hadEdgeGeometry = !!target.geometry.edgeGeometry;
-    let nextEdgeGeometry: THREE.EdgesGeometry | undefined;
-    if (hadEdgeGeometry && !options?.deferPostProcessing) {
-      const triCount = (nextBufferGeometry.getIndex()?.count ?? nextBufferGeometry.getAttribute('position')?.count ?? 0) / 3;
-      if (triCount < 800_000) {
-        try {
-          nextEdgeGeometry = new THREE.EdgesGeometry(nextBufferGeometry, 30);
-        } catch (edgeError) {
-          console.warn(
-            '[SceneCollection] Edge geometry recompute failed for large mesh',
-            edgeError,
-          );
-        }
-      } else {
-        console.warn(
-          `[SceneCollection] Skipping edge geometry recompute for large mesh (${Math.round(triCount).toLocaleString()} triangles).`,
-        );
-      }
-    } else {
-      nextEdgeGeometry = target.geometry.edgeGeometry;
-    }
+    // Rebuild the edge overlay for the swapped geometry, but only when the model
+    // had one — i.e. when the user has the overlay enabled (`buildModelEdgeGeometry`
+    // is never called otherwise, so presence is the enable signal).
+    const nextEdgeGeometry = target.geometry.edgeGeometry
+      ? buildModelEdgeGeometry(nextBufferGeometry)
+      : undefined;
 
     const nextGeometry: GeometryWithBounds = {
       geometry: nextBufferGeometry,
@@ -2883,12 +2962,19 @@ export function useSceneCollectionManager() {
       return pos ? Math.floor(pos.count / 3) : target.polygonCount;
     })();
 
-    const includeSupportHistory = options?.includeSupportState
-      ?? hasSupportsOrKickstandsForModel(id, getSnapshot(), getKickstandSnapshot());
-
-    const before = captureSceneSnapshot(currentModels, currentActiveModelId, currentSelectedModelIds, {
-      includeSupportState: includeSupportHistory,
-    });
+    const modifierAfter = options?.meshModifiersAfter;
+    const includeSupportHistory = modifierAfter !== undefined
+      ? (options?.includeSupportState ?? hasSupportsForModel(id, getSnapshot()))
+      : false;
+    const before = modifierAfter !== undefined
+      ? captureSceneSnapshot(currentModels, currentActiveModelId, currentSelectedModelIds, { includeSupportState: includeSupportHistory })
+      : null;
+    if (before) {
+      before.modifierRecord = {
+        modelId: id,
+        modifiers: cloneMeshModifiersForHistory(options?.meshModifiersBefore !== undefined ? options.meshModifiersBefore : getStoredMeshModifiers(id)),
+      };
+    }
 
     const nextModels = currentModels.map((m) => (
       m.id === id
@@ -2901,11 +2987,19 @@ export function useSceneCollectionManager() {
           }
         : m
     ));
+    if (modifierAfter !== undefined) {
+      storeModelMeshModifiers(id, modifierAfter);
+      clearPreparedGeometryCacheForModel(id);
+    }
     setModels(nextModels);
 
-    const after = captureSceneSnapshot(nextModels, currentActiveModelId, currentSelectedModelIds, {
-      includeSupportState: includeSupportHistory,
-    });
+    if (before) {
+      const after = captureSceneSnapshot(nextModels, currentActiveModelId, currentSelectedModelIds, {
+        includeSupportState: includeSupportHistory,
+      });
+      after.modifierRecord = { modelId: id, modifiers: cloneMeshModifiersForHistory(modifierAfter) };
+      pushSceneSnapshotHistory(before, after, historyDescription, id);
+    }
     // COW chunk-store bake (Ph0.1 sub-phase C3). This is the VERIFIED sole
     // finalization point for hollow, hole-punch, mirror and repair, so baking
     // here moves the encode+SHA+zlib-6 onto the operation the user is already
@@ -2974,7 +3068,7 @@ export function useSceneCollectionManager() {
       visible: true,
       color: base.color,
       polygonCount,
-      meshModifiers: base.meshModifiers ? clonePlainObject(base.meshModifiers) : undefined,
+      meshModifiers: base.meshModifiers ? clonePlainData(base.meshModifiers) : undefined,
     };
 
     const before = captureSceneSnapshot(currentModels, activeModelIdRef.current, selectedModelIdsRef.current, { includeSupportState: false });
@@ -3101,7 +3195,7 @@ export function useSceneCollectionManager() {
       visible: true,
       color: source.color,
       polygonCount: polyCount(pg.geometry),
-      meshModifiers: source.meshModifiers ? clonePlainObject(source.meshModifiers) : undefined,
+      meshModifiers: source.meshModifiers ? clonePlainData(source.meshModifiers) : undefined,
     }));
 
     // ONE atomic update: source becomes part 0 (geometry swapped + position
@@ -3148,6 +3242,142 @@ export function useSceneCollectionManager() {
 
     return extraIds;
   }, [pushSceneSnapshotHistory]);
+
+  /**
+   * The Higher Contrast Model Edges setting can be enabled after models are
+   * already loaded, and those models have no overlay geometry — import only
+   * builds one while the setting is on. Fill them in here, one model per idle
+   * callback: each build is ~2 s for a 500k-triangle mesh, so a batch would
+   * freeze the app, and the overlay is worth nothing until it is looked at.
+   * The result is cached on the geometry, so it is built exactly once.
+   */
+  const higherContrastModelEdges = useSyncExternalStore(
+    subscribeToWorkspaceCameraSettings,
+    getWorkspaceCameraSettingsSnapshot,
+    getWorkspaceCameraSettingsServerSnapshot,
+  ).higherContrastModelEdges;
+
+  useEffect(() => {
+    if (!higherContrastModelEdges) return;
+
+    const queue = modelsRef.current
+      .filter((model) => !model.geometry.edgeGeometry && model.geometry.geometry.getAttribute('position'))
+      .map((model) => model.id);
+    if (queue.length === 0) return;
+
+    let cancelled = false;
+    const scheduleIdle = (cb: () => void) => {
+      if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(cb, { timeout: 500 });
+      } else {
+        setTimeout(cb, 16);
+      }
+    };
+
+    const step = () => {
+      if (cancelled) return;
+      const id = queue.shift();
+      if (!id) return;
+
+      const model = modelsRef.current.find((m) => m.id === id);
+      if (model) {
+        const edges = buildModelEdgeGeometry(model.geometry.geometry);
+        if (edges) {
+          setModels((prev) => prev.map((m) => (
+            m.id === id && m.geometry === model.geometry
+              ? { ...m, geometry: { ...m.geometry, edgeGeometry: edges } }
+              : m
+          )));
+        }
+      }
+      if (queue.length > 0) scheduleIdle(step);
+    };
+
+    scheduleIdle(step);
+    return () => { cancelled = true; };
+  }, [higherContrastModelEdges, setModels]);
+
+  /**
+   * Baked ambient occlusion.
+   *
+   * One native bake per model, on an idle callback, off the main thread:
+   * `dragonfruit-mesh-core::vertex_occlusion` fires a hemisphere fan per vertex
+   * from the mesh's own normal, which measures 12-263 ms for 40k-640k triangle
+   * meshes. The result is attached to the geometry as `aBakedAo`, so nothing is
+   * paid per frame afterwards.
+   */
+  useEffect(() => {
+    // Zero intensity means off, so there is nothing to bake for: raising the
+    // slider later re-runs this and the geometries that never got an attribute
+    // are the ones that get baked.
+    if (!canBakeOcclusion() || bakedAoIntensity <= 0) return;
+
+    const queue = modelsRef.current
+      .filter((model) => {
+        const geometry = model.geometry.geometry;
+        if (!geometry.getAttribute('position')) return false;
+        // Re-bake when the geometry was replaced (repair, boolean cut, hole
+        // punch): the attribute lives on the old geometry, so without this the
+        // new shape would be shaded with the old shape's occlusion.
+        return geometry.getAttribute(BAKED_OCCLUSION_ATTRIBUTE) === undefined;
+      })
+      .map((model) => model.id);
+    if (queue.length === 0) return;
+
+    let cancelled = false;
+    pendingAoBakeRef.current += queue.length;
+
+    const scheduleIdle = (cb: () => void) => {
+      if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(cb, { timeout: 500 });
+      } else {
+        setTimeout(cb, 16);
+      }
+    };
+
+    const bakeOne = async () => {
+      while (!cancelled) {
+        const id = queue.shift();
+        if (!id) return;
+        const model = modelsRef.current.find((m) => m.id === id);
+        try {
+          if (model) {
+            const geometry = model.geometry.geometry;
+            const occlusion = await bakeOcclusionForGeometry(geometry);
+            if (occlusion && !cancelled) {
+              const attribute = new THREE.BufferAttribute(occlusion, 1);
+              attribute.setUsage(THREE.StaticDrawUsage);
+              geometry.setAttribute(BAKED_OCCLUSION_ATTRIBUTE, attribute);
+              setModels((prev) => prev.map((m) => (
+                m.id === id && m.geometry.geometry === geometry
+                  ? { ...m, bakedAoVersion: (m.bakedAoVersion ?? 0) + 1 }
+                  : m
+              )));
+            }
+          }
+        } catch (error) {
+          // A failed bake is not worth surfacing: the model simply keeps the
+          // unoccluded look it has today.
+          console.warn('[ao] bake failed', error);
+        } finally {
+          pendingAoBakeRef.current = Math.max(0, pendingAoBakeRef.current - 1);
+        }
+      }
+    };
+
+    // Two bakes in flight, not one. The ray pass saturates the pool on its own,
+    // but the weld, the tree build and the IPC transfer of each model are serial
+    // phases — on a print-sized model that is about a quarter of its bake, and in
+    // a loaded scene it is a quarter of *every* model's bake spent with fifteen
+    // cores idle. Both commands share one rayon pool, so overlapping them lets
+    // one model's serial phase run during another's ray pass. Two rather than
+    // more: each in-flight bake holds its soup and its output, and past a couple
+    // the pool is oversubscribed for no further gain.
+    for (let worker = 0; worker < Math.min(AO_BAKE_CONCURRENCY, queue.length); worker += 1) {
+      scheduleIdle(() => void bakeOne());
+    }
+    return () => { cancelled = true; };
+  }, [models, setModels, bakedAoIntensity]);
 
   const finalizeModelGeometryPostProcessing = useCallback((id: string) => {
     const target = modelsRef.current.find((m) => m.id === id);
@@ -3321,8 +3551,8 @@ export function useSceneCollectionManager() {
     setImportProgress({
       active: true,
       type: 'mesh',
-      label: 'Splitting Supports…',
-      detail: 'Separating model and support geometry…',
+      label: importLabelSplittingSupports(_),
+      detail: importDetailSeparatingGeometry(_),
       progress: null,
     });
     await waitForUiYield();
@@ -3331,7 +3561,10 @@ export function useSceneCollectionManager() {
     const source = modelsRef.current.find((m) => m.id === modelId);
     if (!source) return;
 
-    const split = splitClassifiedSupportGeometry(source, { interactive: true });
+    const split = splitClassifiedSupportGeometry(source, {
+      interactive: true,
+      computeEdgeGeometry: getSavedWorkspaceCameraSettings().higherContrastModelEdges,
+    });
     if (!split) return;
     const {
       modelGeometry: modelGeom,
@@ -3343,7 +3576,7 @@ export function useSceneCollectionManager() {
       totalTriangleCount: totalTris,
     } = split;
 
-    setImportProgress((p) => ({ ...p, detail: 'Finalizing…' }));
+    setImportProgress((p) => ({ ...p, detail: importDetailFinalizing(_) }));
     await waitForUiYield();
 
     // Tag the support geometry so the renderer uses orange hover/select tints
@@ -3473,7 +3706,7 @@ export function useSceneCollectionManager() {
     } finally {
       setImportProgress({ active: false, type: null, label: '', detail: '', progress: null });
     }
-  }, [pushSceneSnapshotHistory, setImportProgress, waitForUiYield, emitSceneImportReport]);
+  }, [_, pushSceneSnapshotHistory, setImportProgress, waitForUiYield, emitSceneImportReport]);
 
   /** Re-combines split model and support geometries back into a single model,
    *  transforming the supports to align with any model movement/rotation. */
@@ -3481,8 +3714,8 @@ export function useSceneCollectionManager() {
     setImportProgress({
       active: true,
       type: 'mesh',
-      label: 'Merging Supports…',
-      detail: 'Recombining model and support geometry…',
+      label: importLabelMergingSupports(_),
+      detail: importDetailRecombiningGeometry(_),
       progress: null,
     });
     await waitForUiYield();
@@ -3674,7 +3907,7 @@ export function useSceneCollectionManager() {
     } finally {
       setImportProgress({ active: false, type: null, label: '', detail: '', progress: null });
     }
-  }, [pushSceneSnapshotHistory, setImportProgress, waitForUiYield, emitSceneImportReport]);
+  }, [_, pushSceneSnapshotHistory, setImportProgress, waitForUiYield, emitSceneImportReport]);
 
   const scanModelForSupportsInPlace = useCallback(async (modelId: string): Promise<boolean> => {
     const model = modelsRef.current.find(m => m.id === modelId);
@@ -3683,8 +3916,8 @@ export function useSceneCollectionManager() {
     setImportProgress({
       active: true,
       type: 'mesh',
-      label: 'Scanning for Supports…',
-      detail: `Classifying ${model.name}`,
+      label: importLabelScanningSupports(_),
+      detail: importDetailClassifyingFile(model.name, _),
       progress: null,
     });
     await waitForUiYield();
@@ -3729,7 +3962,7 @@ export function useSceneCollectionManager() {
     } finally {
       setImportProgress({ active: false, type: null, label: '', detail: '', progress: null });
     }
-  }, [clearSceneImportReport, emitSceneImportReport, setImportProgress, waitForUiYield]);
+  }, [_, clearSceneImportReport, emitSceneImportReport, setImportProgress, waitForUiYield]);
 
   const renameGroup = useCallback((groupId: string, nextName: string) => {
     const trimmed = nextName.trim();
@@ -3775,30 +4008,16 @@ export function useSceneCollectionManager() {
       });
 
     const supportStateBeforeDelete = getSnapshot();
-    const kickstandSnapshotBefore = getKickstandSnapshot();
-
-    const kickstandCountByModel = new Map<string, number>();
-    for (const kickstand of Object.values(kickstandSnapshotBefore.kickstands)) {
-      const current = kickstandCountByModel.get(kickstand.modelId) ?? 0;
-      kickstandCountByModel.set(kickstand.modelId, current + 1);
-    }
-
-    const supportsByModel = new Map<string, ReturnType<typeof getSupportsForModel>>();
+    const supportsByModel = new Map<string, ModelSupportIds>();
     const supportPrimitiveCountByModel = new Map<string, number>();
 
     for (const model of existing) {
       const supportIds = getSupportsForModel(supportStateBeforeDelete, model.id);
       supportsByModel.set(model.id, supportIds);
 
-      const kickstandCount = kickstandCountByModel.get(model.id) ?? 0;
-      const supportPrimitiveCount = supportIds.roots.length
-        + supportIds.trunks.length
-        + supportIds.branches.length
-        + supportIds.braces.length
-        + supportIds.leaves.length
-        + supportIds.twigs.length
-        + supportIds.sticks.length
-        + kickstandCount;
+      // Every modelId-bearing collection `getSupportsForModel` fills.
+      const supportPrimitiveCount = MODEL_ID_COLLECTION_KEYS
+        .reduce((total, key) => total + supportIds[key].length, 0);
 
       supportPrimitiveCountByModel.set(model.id, supportPrimitiveCount);
     }
@@ -3816,17 +4035,7 @@ export function useSceneCollectionManager() {
         supportsByModel.set(modelId, supportIds);
       }
 
-      const hasMainSupports = supportIds.roots.length > 0
-        || supportIds.trunks.length > 0
-        || supportIds.branches.length > 0
-        || supportIds.braces.length > 0
-        || supportIds.leaves.length > 0
-        || supportIds.twigs.length > 0
-        || supportIds.sticks.length > 0;
-
-      if (hasMainSupports) return true;
-
-      return (kickstandCountByModel.get(modelId) ?? 0) > 0;
+      return MODEL_ID_COLLECTION_KEYS.some((key) => supportIds[key].length > 0);
     };
 
     const includeSupportHistory = existing.some((model) => modelHasSupports(model.id));
@@ -3880,18 +4089,10 @@ export function useSceneCollectionManager() {
       // Defensive pass: guarantee no orphaned supports survive model deletion.
       for (const modelId of ids) {
         const remaining = getSupportsForModel(getSnapshot(), modelId);
-        const hasRemainingMainSupports = remaining.roots.length > 0
-          || remaining.trunks.length > 0
-          || remaining.branches.length > 0
-          || remaining.braces.length > 0
-          || remaining.leaves.length > 0
-          || remaining.twigs.length > 0
-          || remaining.sticks.length > 0;
+        const hasRemainingSupports = MODEL_ID_COLLECTION_KEYS
+          .some((key) => remaining[key].length > 0);
 
-        const hasRemainingKickstands = Object.values(getKickstandSnapshot().kickstands)
-          .some((kickstand) => kickstand.modelId === modelId);
-
-        if (hasRemainingMainSupports || hasRemainingKickstands) {
+        if (hasRemainingSupports) {
           totalRemovedSupports += deleteSupportsForModel(getSnapshot(), modelId);
         }
       }
@@ -3921,22 +4122,9 @@ export function useSceneCollectionManager() {
     if (existingModelIds.length === 0) return 0;
 
     const supportStateBefore = getSnapshot();
-    const kickstandStateBefore = getKickstandSnapshot();
-
     const hasSupportsForModel = (modelId: string) => {
       const supportIds = getSupportsForModel(supportStateBefore, modelId);
-      const hasMainSupports = supportIds.roots.length > 0
-        || supportIds.trunks.length > 0
-        || supportIds.branches.length > 0
-        || supportIds.braces.length > 0
-        || supportIds.leaves.length > 0
-        || supportIds.twigs.length > 0
-        || supportIds.sticks.length > 0;
-
-      if (hasMainSupports) return true;
-
-      return Object.values(kickstandStateBefore.kickstands)
-        .some((kickstand) => kickstand.modelId === modelId);
+      return MODEL_ID_COLLECTION_KEYS.some((key) => supportIds[key].length > 0);
     };
 
     const targetIds = existingModelIds.filter((modelId) => hasSupportsForModel(modelId));
@@ -4036,8 +4224,6 @@ export function useSceneCollectionManager() {
     const beforeActiveModelId = activeModelId;
     const beforeSelectedModelIds = selectedModelIds;
     const supportStateBefore = getSnapshot();
-    const kickstandStateBefore = getKickstandSnapshot();
-
     const first = modelClipboard[0];
 
     const pastedGeometry = cloneGeometryWithBounds(first.geometry, { shared: true });
@@ -4069,7 +4255,7 @@ export function useSceneCollectionManager() {
 
     schedulePostPaint(() => {
       beginSupportStateBatch();
-      beginKickstandStoreBatch();
+      beginSupportStateBatch();
       try {
         pasteModelSupportsFromClipboard(
           first.supportClipboard,
@@ -4079,14 +4265,13 @@ export function useSceneCollectionManager() {
           { recordHistory: false },
         );
       } finally {
-        endKickstandStoreBatch();
+        endSupportStateBatch();
         endSupportStateBatch();
       }
 
       const before = captureSceneSnapshot(beforeModels, beforeActiveModelId, beforeSelectedModelIds, {
         includeSupportState: true,
         supportStateOverride: supportStateBefore,
-        kickstandStateOverride: kickstandStateBefore,
       });
       const after = captureSceneSnapshot(nextModels, id, [id], { includeSupportState: true });
       pushSceneSnapshotHistory(before, after, `Paste Model ${first.name}`);
@@ -4102,8 +4287,6 @@ export function useSceneCollectionManager() {
     const beforeActiveModelId = activeModelId;
     const beforeSelectedModelIds = selectedModelIds;
     const supportStateBefore = getSnapshot();
-    const kickstandStateBefore = getKickstandSnapshot();
-
     const entries = modelClipboard;
 
     const centerX = defaultImportCenterXY.x;
@@ -4205,40 +4388,25 @@ export function useSceneCollectionManager() {
         });
       };
 
-      payload.trunks.forEach((trunk) => {
-        expandSegments(trunk.segments as any[]);
-        if (trunk.contactCone) {
-          expand(trunk.contactCone.pos, Math.max(0.001, trunk.contactCone.profile.contactDiameterMm / 2));
+      // Every declared type widens the rectangle. A brace contributes nothing
+      // of its own: the knots it spans are expanded above. The radius field
+      // differs by contact kind -- a cone's is in its profile, a disk's is on
+      // the contact.
+      for (const descriptor of SUPPORT_TYPES) {
+        const entities = payload[descriptor.location.key] as unknown as Array<Record<string, any>> | undefined;
+        if (!entities) continue;
+        for (const entity of entities) {
+          if (descriptor.hasSegments) expandSegments(entity.segments as any[]);
+          for (const { kind, field } of contactEndpointsFor(descriptor.id)) {
+            const contact = entity[field];
+            if (!contact?.pos) continue;
+            const diameter = kind === 'cone'
+              ? contact.profile?.contactDiameterMm
+              : contact.contactDiameterMm;
+            expand(contact.pos, Math.max(0.001, (diameter ?? 0) / 2));
+          }
         }
-      });
-
-      payload.branches.forEach((branch) => {
-        expandSegments(branch.segments as any[]);
-        if (branch.contactCone) {
-          expand(branch.contactCone.pos, Math.max(0.001, branch.contactCone.profile.contactDiameterMm / 2));
-        }
-      });
-
-      payload.leaves.forEach((leaf) => {
-        if (!leaf.contactCone) return;
-        expand(leaf.contactCone.pos, Math.max(0.001, leaf.contactCone.profile.contactDiameterMm / 2));
-      });
-
-      payload.twigs.forEach((twig) => {
-        expandSegments(twig.segments as any[]);
-        expand(twig.contactDiskA.pos, Math.max(0.001, twig.contactDiskA.contactDiameterMm / 2));
-        expand(twig.contactDiskB.pos, Math.max(0.001, twig.contactDiskB.contactDiameterMm / 2));
-      });
-
-      payload.sticks.forEach((stick) => {
-        expandSegments(stick.segments as any[]);
-        expand(stick.contactConeA.pos, Math.max(0.001, stick.contactConeA.profile.contactDiameterMm / 2));
-        expand(stick.contactConeB.pos, Math.max(0.001, stick.contactConeB.profile.contactDiameterMm / 2));
-      });
-
-      payload.kickstands.forEach((kickstand) => {
-        expandSegments(kickstand.segments as any[]);
-      });
+      }
 
       return hasAny ? { minX, maxX, minY, maxY } : null;
     };
@@ -4467,28 +4635,29 @@ export function useSceneCollectionManager() {
 
       schedulePostPaint(() => {
         beginSupportStateBatch();
-        beginKickstandStoreBatch();
+        beginSupportStateBatch();
         try {
-          pastedModels.forEach((pastedModel, index) => {
-            const sourceEntry = entries[index];
-            if (!sourceEntry) return;
-            pasteModelSupportsFromClipboard(
-              sourceEntry.supportClipboard,
-              pastedModel.id,
-              sourceEntry.transform,
-              pastedModel.transform,
-              { recordHistory: false },
-            );
-          });
+          pasteModelSupports(
+            pastedModels.flatMap((pastedModel, index) => {
+              const sourceEntry = entries[index];
+              if (!sourceEntry?.supportClipboard) return [];
+              return [{
+                payload: sourceEntry.supportClipboard,
+                targetModelId: pastedModel.id,
+                sourceTransform: sourceEntry.transform,
+                targetTransform: pastedModel.transform,
+              }];
+            }),
+            { recordHistory: false },
+          );
         } finally {
-          endKickstandStoreBatch();
+          endSupportStateBatch();
           endSupportStateBatch();
         }
 
         const before = captureSceneSnapshot(beforeModels, beforeActiveModelId, beforeSelectedModelIds, {
           includeSupportState: true,
           supportStateOverride: supportStateBefore,
-          kickstandStateOverride: kickstandStateBefore,
         });
         const after = captureSceneSnapshot(nextModels, createdIds[0], createdIds, { includeSupportState: true });
         pushSceneSnapshotHistory(before, after, createdIds.length === 1 ? 'Paste Model' : `Paste ${createdIds.length} Models`);
@@ -4549,7 +4718,7 @@ export function useSceneCollectionManager() {
     // Apply source-support transform before model commit so support state can
     // never visually lag behind the moved source model during duplicate apply.
     beginSupportStateBatch();
-    beginKickstandStoreBatch();
+    beginSupportStateBatch();
     try {
       if (sourceTransform && !transformsEqual(source.transform, sourceTransform)) {
         transformSupportsForModel(sourceId, source.transform, sourceTransform);
@@ -4577,15 +4746,17 @@ export function useSceneCollectionManager() {
       const nextModels = [...withSourceGroup, ...newModels];
       setModels(nextModels);
 
-      newModels.forEach((model) => {
-        pasteModelSupportsFromClipboard(
-          supportClipboard,
-          model.id,
-          originalSourceTransform,
-          model.transform,
-          { recordHistory: false },
-        );
-      });
+      // One write for every copy: the merge and the store's own index rebuild
+      // are per-write, so pasting them one at a time cost N of each.
+      pasteModelSupports(
+        newModels.map((model) => ({
+          payload: supportClipboard as SupportClipboardPayload,
+          targetModelId: model.id,
+          sourceTransform: originalSourceTransform,
+          targetTransform: model.transform,
+        })),
+        { recordHistory: false },
+      );
 
       if (createdIds.length > 0) {
         setActiveModelId(createdIds[0]);
@@ -4596,7 +4767,7 @@ export function useSceneCollectionManager() {
         pushSceneSnapshotHistory(before, after, createdIds.length === 1 ? `Duplicate Model ${source.name}` : `Duplicate ${createdIds.length} Models`);
       }
     } finally {
-      endKickstandStoreBatch();
+      endSupportStateBatch();
       endSupportStateBatch();
     }
 
@@ -4649,7 +4820,7 @@ export function useSceneCollectionManager() {
       setImportProgress({
         active: true,
         type: 'scene',
-        label: `Importing ${pluginImport.fileType.displayName}…`,
+        label: importLabelFileType(pluginImport.fileType.displayName, _),
         detail: file.name,
         progress: null,
       });
@@ -4684,8 +4855,24 @@ export function useSceneCollectionManager() {
         processed: GeometryWithBounds;
       }> = [];
       for (const normalized of normalizedPayloads) {
-        const processed = await processGeometry(normalized.geometry, {
+        // The plugin built this geometry in the renderer, so it has not been
+        // through the native loaders that refine coarse faces. Refine it here, and
+        // keep the normals the command returns: they are welded and split at
+        // creases, which `computeVertexNormals` would flatten again.
+        let geometry = normalized.geometry;
+        let skipComputeNormals = false;
+        try {
+          const refined = await refineCoarseFaces(geometry);
+          if (refined) {
+            geometry = refined;
+            skipComputeNormals = true;
+          }
+        } catch (error) {
+          console.warn('[refine] plugin geometry left unrefined', error);
+        }
+        const processed = await processGeometry(geometry, {
           center: false,
+          ...(skipComputeNormals ? { _skipComputeNormals: true } : {}),
           nativeProcessingMode: autoRepairScenes ? 'auto' : 'none',
           onNativeProcessingStage: (stage) => {
             if (options?.suppressProgress) return;
@@ -4694,10 +4881,10 @@ export function useSceneCollectionManager() {
               setImportProgress({
                 active: true,
                 type: 'scene',
-                label: `Importing ${pluginImport.fileType.displayName}…`,
+                label: importLabelFileType(pluginImport.fileType.displayName, _),
                 detail: normalizedPayloads.length > 1
-                  ? `Auto-Repairing Mesh ${processedItems.length + 1}/${normalizedPayloads.length}`
-                  : `Auto-Repairing ${file.name}`,
+                  ? importDetailAutoRepairingMesh(processedItems.length + 1, normalizedPayloads.length, _)
+                  : importDetailAutoRepairingFile(file.name, _),
                 progress: null,
               });
               return;
@@ -4707,10 +4894,10 @@ export function useSceneCollectionManager() {
               setImportProgress({
                 active: true,
                 type: 'scene',
-                label: `Importing ${pluginImport.fileType.displayName}…`,
+                label: importLabelFileType(pluginImport.fileType.displayName, _),
                 detail: normalizedPayloads.length > 1
-                  ? `Inspecting Mesh ${processedItems.length + 1}/${normalizedPayloads.length}`
-                  : `Inspecting ${file.name}`,
+                  ? importDetailInspectingMesh(processedItems.length + 1, normalizedPayloads.length, _)
+                  : importDetailInspectingFile(file.name, _),
                 progress: null,
               });
               return;
@@ -4720,10 +4907,10 @@ export function useSceneCollectionManager() {
               setImportProgress({
                 active: true,
                 type: 'scene',
-                label: `Importing ${pluginImport.fileType.displayName}…`,
+                label: importLabelFileType(pluginImport.fileType.displayName, _),
                 detail: normalizedPayloads.length > 1
-                  ? `Classifying Mesh ${processedItems.length + 1}/${normalizedPayloads.length}`
-                  : `Classifying ${file.name}`,
+                  ? importDetailClassifyingMesh(processedItems.length + 1, normalizedPayloads.length, _)
+                  : importDetailClassifyingFile(file.name, _),
                 progress: null,
               });
             }
@@ -4788,9 +4975,13 @@ export function useSceneCollectionManager() {
           originalPosition.z,
         );
 
-        const modelName = processedItems.length === 1
-          ? sanitizeImportedModelDisplayName(file.name)
-          : `${sanitizeImportedModelDisplayName(file.name)} (${i + 1})`;
+        // Prefer the source file's own object name; fall back to the imported
+        // filename (with an index when the container held several models).
+        const modelName = normalized.objName
+          ? sanitizeImportedModelDisplayName(normalized.objName)
+          : processedItems.length === 1
+            ? sanitizeImportedModelDisplayName(file.name)
+            : `${sanitizeImportedModelDisplayName(file.name)} (${i + 1})`;
 
         const model: LoadedModel = {
           id: importedModelId || uuidv4(),
@@ -4834,7 +5025,10 @@ export function useSceneCollectionManager() {
         const applySupports = () => {
           for (const { model, sourceTransform, supportData } of pendingSupports) {
             applyImportDefaultsToRaftState();
-            mergeFromImportFormat(supportData!);
+            // Bind these supports to THIS model. The plugin already stamps a
+            // modelId, but nothing verified it matched the id the host assigned
+            // the model -- so pass the host id and let the store reconcile.
+            mergeFromImportFormat(supportData!, model.id);
             if (!transformsEqual(sourceTransform, model.transform)) {
               transformSupportsForModel(model.id, sourceTransform, model.transform);
             }
@@ -4885,7 +5079,7 @@ export function useSceneCollectionManager() {
         });
       }
     }
-  }, [emitSceneImportReport, findFreeSpotCentersForModels, getSceneExtension, isModelFootprintInsidePlate, processGeometry, requestSceneImportPlacementChoice, scenePluginImportHandlersByExtension, setActiveModelId, setModels, setSelectedModelIds, shouldAutoRepairSceneImports, trackRecentOpenedFiles, waitForUiYield]);
+  }, [_, emitSceneImportReport, findFreeSpotCentersForModels, getSceneExtension, isModelFootprintInsidePlate, processGeometry, requestSceneImportPlacementChoice, scenePluginImportHandlersByExtension, setActiveModelId, setModels, setSelectedModelIds, shouldAutoRepairSceneImports, trackRecentOpenedFiles, waitForUiYield]);
 
   const handleImportVoxlFile = useCallback(async (file: File, options?: SceneImportRunOptions): Promise<boolean> => {
     if (!options?.suppressRecentTracking) {
@@ -4896,7 +5090,7 @@ export function useSceneCollectionManager() {
       setImportProgress({
         active: true,
         type: 'scene',
-        label: 'Importing VOXL Scene…',
+        label: importLabelVoxlScene(_),
         detail: file.name,
         progress: null,
       });
@@ -4961,8 +5155,8 @@ export function useSceneCollectionManager() {
         setImportProgress({
           active: true,
           type: 'scene',
-          label: 'Importing VOXL Scene…',
-          detail: `Model ${i + 1}/${document.models.length}: ${model.name}`,
+          label: importLabelVoxlScene(_),
+          detail: importDetailVoxlModel(i + 1, document.models.length, model.name, _),
           progress: null,
         });
 
@@ -5016,7 +5210,14 @@ export function useSceneCollectionManager() {
 
             const embeddedName = meshRef.fileName?.trim() || `${model.name || 'model'}.stl`;
 
+            // Baked classification (VOXL V2.4): the file carries the model/support
+            // split this mesh was saved with, so skip the classifier instead of
+            // re-deriving it. Auto-repair supersedes it — a repair pass produces
+            // its own report for the geometry it rebuilt.
+            const bakedClassification = autoRepairScenes ? undefined : model.classification;
+
             geometry = await loadMeshGeometry(bytes, embeddedName, {
+              ...(bakedClassification ? { bakedClassification } : {}),
               nativeProcessingMode: autoRepairScenes ? 'auto' : 'none',
               assumeSupportGeometry: model.isSupportGeometry,
               skipClassification: model.isSupportGeometry,
@@ -5025,8 +5226,8 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'scene',
-                  label: 'Importing VOXL Scene…',
-                  detail: `Auto-Repairing Mesh ${i + 1}/${document.models.length}: ${model.name}`,
+                  label: importLabelVoxlScene(_),
+                  detail: importDetailVoxlAutoRepairing(i + 1, document.models.length, model.name, _),
                   progress: null,
                 });
                 return;
@@ -5036,8 +5237,8 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'scene',
-                  label: 'Importing VOXL Scene…',
-                  detail: `Inspecting Mesh ${i + 1}/${document.models.length}: ${model.name}`,
+                  label: importLabelVoxlScene(_),
+                  detail: importDetailVoxlInspecting(i + 1, document.models.length, model.name, _),
                   progress: null,
                 });
                 return;
@@ -5047,8 +5248,8 @@ export function useSceneCollectionManager() {
                 setImportProgress({
                   active: true,
                   type: 'scene',
-                  label: 'Importing VOXL Scene…',
-                  detail: `Classifying Mesh ${i + 1}/${document.models.length}: ${model.name}`,
+                  label: importLabelVoxlScene(_),
+                  detail: importDetailVoxlClassifying(i + 1, document.models.length, model.name, _),
                   progress: null,
                 });
               }
@@ -5261,7 +5462,7 @@ export function useSceneCollectionManager() {
         });
       }
     }
-  }, [cloneGeometryWithBounds, emitSceneImportReport, findFreeSpotCentersForModels, isModelFootprintInsidePlate, requestSceneImportPlacementChoice, shouldAutoRepairSceneImports, trackRecentOpenedFiles, waitForUiYield]);
+  }, [_, cloneGeometryWithBounds, emitSceneImportReport, findFreeSpotCentersForModels, isModelFootprintInsidePlate, requestSceneImportPlacementChoice, shouldAutoRepairSceneImports, trackRecentOpenedFiles, waitForUiYield]);
 
   const importSceneFile = useCallback(async (file: File, options?: SceneImportRunOptions): Promise<boolean> => {
     const extension = getSceneExtension(file.name);
@@ -5295,8 +5496,8 @@ export function useSceneCollectionManager() {
     setImportProgress({
       active: true,
       type: 'scene',
-      label: 'Importing Scenes…',
-      detail: `Preparing 0/${files.length}`,
+      label: importLabelScenes(_),
+      detail: importDetailPreparing(0, files.length, _),
       progress: null,
     });
 
@@ -5309,8 +5510,8 @@ export function useSceneCollectionManager() {
       setImportProgress({
         active: true,
         type: 'scene',
-        label: 'Importing Scenes…',
-        detail: `${i + 1}/${files.length}: ${file.name}`,
+        label: importLabelScenes(_),
+        detail: importDetailIndexedFile(i + 1, files.length, file.name, _),
         progress: null,
       });
 
@@ -5341,7 +5542,7 @@ export function useSceneCollectionManager() {
       emitSceneImportReport(`Scene import failed for all ${files.length} files.`, 'error');
     }
     return successCount > 0;
-  }, [emitSceneImportReport, getSceneExtension, importSceneFile, trackRecentOpenedFiles, waitForUiYield]);
+  }, [_, emitSceneImportReport, getSceneExtension, importSceneFile, trackRecentOpenedFiles, waitForUiYield]);
 
   const onImportSceneChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -5482,31 +5683,7 @@ export function useSceneCollectionManager() {
         return { ...m, color: normalizedColor };
       }));
     }
-
-    const prev = readMeshAppearanceFromLocalStorage();
-
-    const persistedShaderType = clampPersistedMeshShaderType(prev?.shaderType ?? shaderType, DEFAULT_SHADER_TYPE);
-    writeMeshAppearanceToLocalStorage({
-      v: 1,
-      shaderType: persistedShaderType,
-      matcapVariant: prev?.matcapVariant ?? matcapVariant,
-      flatUseVertexColors: prev?.flatUseVertexColors ?? flatUseVertexColors,
-      toonSteps: prev?.toonSteps ?? toonSteps,
-      ambientIntensity: prev?.ambientIntensity ?? ambientIntensity,
-      directionalIntensity: prev?.directionalIntensity ?? directionalIntensity,
-      materialRoughness: prev?.materialRoughness ?? materialRoughness,
-      wireframeThicknessPx: prev?.wireframeThicknessPx ?? wireframeThicknessPx,
-      xrayOpacity: prev?.xrayOpacity ?? xrayOpacity,
-      heatmapMinAngle: prev?.heatmapMinAngle ?? heatmapMinAngle,
-      heatmapMaxAngle: prev?.heatmapMaxAngle ?? heatmapMaxAngle,
-      heatmapColors: prev?.heatmapColors ?? heatmapColors,
-      meshColor: normalizedColor,
-      selectionColor: prev?.selectionColor ?? selectionColor,
-      hoverColor: prev?.hoverColor ?? hoverColor,
-      hoverTintStrength: prev?.hoverTintStrength ?? hoverTintStrength,
-      selectedTintStrength: prev?.selectedTintStrength ?? selectedTintStrength,
-    });
-  }, [activeModelId, ambientIntensity, directionalIntensity, flatUseVertexColors, heatmapMinAngle, heatmapColors, heatmapMaxAngle, hoverColor, hoverTintStrength, materialRoughness, matcapVariant, selectedTintStrength, selectionColor, shaderType, toonSteps, wireframeThicknessPx, xrayOpacity]);
+  }, [activeModelId]);
 
   const setMeshVisible = useCallback((visible: boolean) => {
     if (activeModelId) {
@@ -5851,6 +6028,8 @@ export function useSceneCollectionManager() {
     setDirectionalIntensity,
     materialRoughness,
     setMaterialRoughness,
+    bakedAoIntensity,
+    setBakedAoIntensity,
     wireframeThicknessPx,
     setWireframeThicknessPx,
     xrayOpacity,
@@ -5861,16 +6040,12 @@ export function useSceneCollectionManager() {
     setHeatmapMaxAngle,
     shaderType,
     setShaderType,
+    configuredShaderType,
+    setConfiguredShaderType,
     matcapVariant,
     setMatcapVariant,
     flatUseVertexColors,
     setFlatUseVertexColors,
-    toonSteps,
-    setToonSteps,
-    selectionColor,
-    setSelectionColor,
-    hoverColor,
-    setHoverColor,
     hoverTintStrength,
     setHoverTintStrength,
     selectedTintStrength,

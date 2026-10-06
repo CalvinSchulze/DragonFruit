@@ -24,6 +24,12 @@ Quick actions:
 - Set **Distance (mm)**.
 - Use **Lift** / **Drop** for direct repositioning.
 
+The Auto Support panel carries the same flag as a toggle button beside its preset
+selector, labelled with the state it is in (`Auto-Lift ON` / `Auto-Lift OFF`) and
+filled with the theme accent while it is on, because the gap it holds under the
+model is what a generated support has to span. One flag, two controls: flipping
+either writes `useTransformManager`'s `autoLift`.
+
 ## 3) Rotate
 
 - Edit X/Y/Z angles directly.

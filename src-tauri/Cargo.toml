@@ -8,11 +8,11 @@ edition = "2021"
 # backend. macOS/Windows use wry (default); Linux builds pass --features
 # tauri-cef. Pinned to a release tag (not `branch`) for reproducibility — see
 # the [patch.crates-io] note below and ADR 0005 for the bump procedure.
-tauri-build = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22", features = [] }
+tauri-build = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26", features = [] }
 
 [dependencies]
 # default-features = false — runtime backend chosen via tauri-wry / tauri-cef features.
-tauri = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22", default-features = false, features = ["compression", "dynamic-acl"] }
+tauri = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26", default-features = false, features = ["compression", "dynamic-acl"] }
 # Enabled by the `logging` feature on every backend: tauri-plugin-log declares
 # tauri with default-features = false, so it does not pull in wry.
 tauri-plugin-log = { version = "2", optional = true }
@@ -46,11 +46,9 @@ futures-util = "0.3"
 dragonfruit-slicing-engine = { path = "../rust/dragonfruit-slicing-engine" }
 dragonfruit-rtsp-relay = { path = "../rust/dragonfruit-rtsp-relay" }
 dragonfruit-islands = { path = "../rust/dragonfruit-islands" }
+dragonfruit-mesh-core = { path = "../rust/dragonfruit-mesh-core" }
 dragonfruit-mesh-repair = { path = "../rust/dragonfruit-mesh-repair", features = ["manifold"] }
 dragonfruit-organic-cut = { path = "../rust/dragonfruit-organic-cut", features = ["manifold"] }
-dragonfruit-sdf = { path = "../rust/dragonfruit-sdf" }
-dragonfruit-astar = { path = "../rust/dragonfruit-astar" }
-flate2 = "1.1.9"
 bytemuck = "1"
 meshopt = "0.6.2"
 
@@ -76,7 +74,7 @@ logging = ["dep:tauri-plugin-log"]
 # resolves a single tauri version tree. Safe for macOS/Windows since wry
 # remains the default feature on feat/cef.
 #
-# Pinned to the `tauri-cef-v3.0.0-alpha.22` tag rather than `branch = "feat/cef"`
+# Pinned to the `tauri-cef-v3.0.0-alpha.26` tag rather than `branch = "feat/cef"`
 # so the build is reproducible and cannot silently drift when the upstream
 # branch moves. A tag also keeps every crate on a single commit: the previous
 # rev-based pinning left `tauri-plugin` on an older commit than the rest, and
@@ -86,14 +84,14 @@ logging = ["dep:tauri-plugin-log"]
 # ADR 0005, "Bumping the pinned tauri tag".
 # To revert to stable: delete this block and switch deps back to crates.io.
 [patch.crates-io]
-tauri = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-build = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-runtime = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-macros = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-utils = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-codegen = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
-tauri-plugin = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.22" }
+tauri = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-build = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-macros = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-codegen = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
+tauri-plugin = { git = "https://github.com/tauri-apps/tauri", tag = "tauri-cef-v3.0.0-alpha.26" }
 
 # Maximum release optimisation: fat LTO collapses all codegen units into one
 # link step, enabling inlining and dead-code elimination across crate boundaries.

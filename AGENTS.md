@@ -90,9 +90,25 @@ Reference example: `docs/dev/experiments-framework.md`.
 Run `npm run check:docs` before you push. It verifies that every path and code
 symbol a document cites still exists, that no page pins a line number (they
 drift within a week), and that the MkDocs nav matches what is on disk. It runs
-in CI. Deliberate exceptions — schematic names, external APIs, symbols named
+in CI. It reads the working tree rather than git, so a stale build under one of
+its code roots can mask a real problem: a leftover `src-tauri/frontend-dist`
+bundle that still contained a deleted symbol made the check pass locally while
+CI, on a clean checkout, failed on it. Deliberate exceptions — schematic names, external APIs, symbols named
 precisely because they were removed — go in
 `scripts/docs-accuracy-allowlist.json` **with a reason**.
+
+## Lint
+
+The repo still carries thousands of pre-existing ESLint problems, so
+`npm run lint` (full repo) is not a gate and will stay red for a long while.
+What gates CI is `npm run check:lint`: it lints only the directories listed in
+`scripts/lint-clean-dirs.json` and fails on any error **or** warning there.
+
+Coverage grows one directory at a time. To put a directory under lint control,
+clean it until `npx eslint <dir> --max-warnings 0` passes, then add it to the
+list. Never take a directory off the list to turn a build green, and when a
+listed directory is renamed, follow the rename in the list — the check fails on
+missing entries precisely so coverage cannot be lost silently.
 
 ## Consult the developer docs first
 
@@ -103,7 +119,9 @@ is the index and the `mkdocs.yml` nav is the map.
 
 Most cross-cutting systems are documented: history/undo-redo, registration
 seams, state stores, config schemas, the Tauri IPC bridge, hotkeys, plugins,
-experiments, and the support system. Read the relevant page before grepping the
+experiments, the support system, and the Rust side: the slicing engine
+(`docs/dev/slicing-engine/`), island detection, the RTSP relay and the OS
+thumbnailers. Read the relevant page before grepping the
 codebase — it names the exact files and invariants you would otherwise spend
 time re-deriving. Only fall back to source reading when the docs don't answer
 the question.
@@ -116,7 +134,15 @@ the question.
 | `CONTEXT.md` | Domain glossary — use its terms, not synonyms | no |
 | `docs/dev/`, `docs/reference/` | Contracts, invariants, frameworks | yes |
 | `docs/adr/` | Decisions and the reasoning behind them | yes |
-| `docs/internal/` | Working inboxes, agent instructions, research | **no** |
+| `docs/internal/` | Working inboxes, agent instructions, research, plans | **no** |
+| `src/**/AGENTS.md` | Directory-scoped notes. Gitignored — local working aids, may not exist | no |
+
+Documentation goes under `docs/`, never beside the code it describes. The only
+Markdown elsewhere is what has to be elsewhere: the root files (`README.md`,
+`AGENTS.md`/`CLAUDE.md`, `CONTEXT.md`, `CODE_OF_CONDUCT.md`), GitHub's issue
+templates and instructions under `.github/`, each plugin's own `README.md` (the
+app serves `plugins/<id>/README.md` to the Plugin Studio at runtime), and the
+licence or provenance notes beside a separately licensed or vendored crate.
 
 `docs/internal/` is excluded from the MkDocs build (`exclude_docs`) but is
 versioned and reviewed like everything else — see `docs/internal/README.md`.
@@ -141,6 +167,26 @@ Default label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 Single-context repo — one `CONTEXT.md` at the root plus `docs/adr/`. See
 `docs/internal/agents/domain.md`.
+
+## i18n / Lingui — every user-visible string goes through the catalog
+
+Never write user-visible text as a bare literal. JSX text, text-bearing props
+(`title`, `label`, `aria-label`, `placeholder`, …) and labels in data arrays are
+wrapped: `<Trans>…</Trans>` in JSX, `_(msg\`…\`)` for props, `msg` descriptors at
+module scope for data. Build a sentence as one message with placeholders and
+`<0>…</0>` tags, never by concatenating fragments — word order differs per
+language. When the same English word means two things (the "Light" theme vs the
+"Light" preset), give the messages a `context`. After adding strings, run
+`npm run i18n:extract` and translate the new Spanish entries in `src/locales/es.po`.
+
+CI enforces this with `npm run check:i18n-literals`, which works like `check:lint`:
+it covers only the directories and files listed in `scripts/i18n-clean-dirs.json`
+and fails on any unwrapped literal there. Coverage grows one path at a time —
+`node scripts/check-i18n-literals.mjs --suggest` lists clean directories not yet on
+the list, and `--report <path>` shows what is left to wrap in one. Never take a path
+off the list to turn a build green, and follow renames in it. Text that is genuinely
+not translatable (a unit, a brand) takes an `i18n-ignore` comment on its line or the
+line above.
 
 ## i18n / Lingui — interpolation gotcha
 
@@ -173,8 +219,8 @@ Two invariants that mimicry won't teach — get either wrong and undo breaks **s
 
 ## Rust crate version bumps
 
-The native crates under `rust/` (`dragonfruit-islands`, `dragonfruit-sdf`,
-`dragonfruit-mesh-core`, …) are **standalone crates** — there is no workspace
+The native crates under `rust/` (`dragonfruit-islands`, `dragonfruit-mesh-core`,
+`dragonfruit-slicing-engine`, …) are **standalone crates** — there is no workspace
 root — consumed by the Tauri shell via path dependencies in
 `src-tauri/Cargo.toml`. Because path deps always resolve, a stale `version` is
 invisible locally but breaks the lock file, caches, and any versioned consumer.
@@ -185,5 +231,8 @@ Whenever you change one of these crates, **bump its `version`** in that crate's
 - `patch` for bug fixes, `minor` for new features (semver).
 - If another crate or the shell pins it by version, update that requirement to
   match.
-- Run `cargo check` (or `cargo build`) afterwards so `Cargo.lock` picks up the
-  bump before committing.
+- Run `cargo check` (or `cargo build`) afterwards so `Cargo.lock` picks up the bump before committing.
+
+## App version — do not bump unprompted
+
+NEVER bump the DragonFruit main app version unprompted — `package.json` `version`, `src-tauri/tauri.conf.json` `version`, and `src-tauri/Cargo.toml` `[package] version` must stay on the current release (currently `0.1.15`) unless the user explicitly asks for a release/version bump. The `rust/*` crate bumps above are allowed; the main app version is release-driven and user-controlled.

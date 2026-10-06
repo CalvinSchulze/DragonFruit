@@ -13,6 +13,7 @@ import type {
 import { getBuiltinComplexPluginDefinitions } from '@/features/plugins/builtinComplexPlugins';
 import { BUILTIN_SIMPLE_PLUGIN_MANIFESTS } from '@/features/plugins/builtinSimplePlugins';
 import { normalizeOutputFormat, normalizeFormatVersion, normalizeSettingsMode, normalizeWebcamRotationDeg, DEFAULT_WEBCAM_ROTATION_DEG } from '@/features/profiles/outputFormatUtils';
+import { hasWindow } from '@/utils/dom';
 
 export type PluginSource = 'builtin' | 'github';
 export type PluginInstallTrust = 'allowlisted' | 'unverified-user-approved';
@@ -77,6 +78,8 @@ function ensureBuiltinAdaptersHydrated(): void {
     const localMaterialAdapters = definition.localMaterialSettingsByOutput ?? {};
     Object.entries(localMaterialAdapters).forEach(([outputFormat, adapter]) => {
       const normalized = normalizeOutputFormat(outputFormat);
+      // A key that is not a format declares nothing to attach settings to.
+      if (!normalized) return;
       LOCAL_MATERIAL_SETTINGS_BY_OUTPUT.set(normalized, {
         ...adapter,
         outputFormat: normalized,
@@ -86,6 +89,8 @@ function ensureBuiltinAdaptersHydrated(): void {
     const localMaterialAdaptersByMode = definition.localMaterialSettingsByOutputAndMode ?? {};
     Object.entries(localMaterialAdaptersByMode).forEach(([outputFormat, adaptersByMode]) => {
       const normalizedOutput = normalizeOutputFormat(outputFormat);
+      // Same rule as the per-output map above.
+      if (!normalizedOutput) return;
       const modeMap = LOCAL_MATERIAL_SETTINGS_BY_OUTPUT_AND_MODE.get(normalizedOutput) ?? new Map<string, ProfileLocalMaterialSettingsAdapter>();
 
       Object.entries(adaptersByMode ?? {}).forEach(([settingsMode, adapter]) => {
@@ -179,6 +184,7 @@ export function getProfileLocalMaterialSettingsAdapter(
   if (!outputFormat || typeof outputFormat !== 'string') return null;
 
   const normalizedOutput = normalizeOutputFormat(outputFormat);
+  if (!normalizedOutput) return null;
   const normalizedMode = normalizeSettingsMode(settingsMode);
 
   if (normalizedMode) {
@@ -239,7 +245,7 @@ const MAX_MATERIAL_TEMPLATES = 512;
 const MAX_MATERIAL_PRESETS = 2048;
 
 function shouldUseBundledAssetPaths(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (!hasWindow()) return false;
   if (process.env.NODE_ENV !== 'production') return false;
   const protocol = window.location?.protocol ?? '';
   const hostname = window.location?.hostname ?? '';
@@ -286,7 +292,9 @@ function sanitizeProfileVersion(value: unknown): number | undefined {
 }
 
 function sanitizeOutputFormat(value: unknown): PrinterPreset['display']['outputFormat'] {
-  return normalizeOutputFormat(value);
+  // A preset without a usable format keeps an empty one rather than borrowing
+  // another plugin's: the printer picker shows it and slicing names it.
+  return normalizeOutputFormat(value) ?? '';
 }
 
 function sanitizeNetworkSupport(value: unknown): PrinterPreset['networkSupport'] {
@@ -547,9 +555,10 @@ function sanitizeMaterialTemplate(input: unknown): Omit<MaterialProfile, 'id' | 
         zaaDuplicateZ: true,
         blurGraySourceMode: 'lut',
         zBlendResinType: 'opaque',
-        tipOffsetMode: 'disabled',
+        tipOffsetMode: 'auto',
         tipOffsetMm: 0.05,
         tipOffsetDisplayInUi: false,
+        supportTipShrinkPercent: 10,
         selectedLutCurveId: 'default',
         aaOnSupports: false,
         ditherEnabled: false,
@@ -662,7 +671,7 @@ function sanitizeInstalledPlugin(input: unknown): InstalledProfilePlugin | null 
 }
 
 function save() {
-  if (typeof window === 'undefined') return;
+  if (!hasWindow()) return;
   try {
     const envelope: PersistedPluginEnvelope = {
       version: STORAGE_VERSION,
@@ -677,7 +686,7 @@ function save() {
 export function hydratePluginRegistry() {
   if (hydrated) return;
   hydrated = true;
-  if (typeof window === 'undefined') return;
+  if (!hasWindow()) return;
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);

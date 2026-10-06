@@ -166,6 +166,65 @@ report at a human rate.
 feeds it every Rust log record. Anything logged from a hot path arrives there
 too. Check what already exists before adding an instrument.
 
+**`structuredClone` costs ~10 µs per call whatever the size.** A support snapshot
+is thousands of small records, so a whole-state `structuredClone` pays that fixed
+cost per entity: ~57 ms for a 9,000-entity scene against ~20 ms for
+`clonePlainData` (`src/utils/plainDataClone.ts`), which walks plain records and
+keeps object identity. Use it for state snapshots and payload copies. Keep
+`structuredClone` where a payload may hold typed arrays or other non-plain values
+and is small enough that the fixed cost does not matter — the history store's own
+payload clone, for instance.
+
+**One store write per copy is not free either.** Every `setSnapshot` rebuilds the
+support store's whole index, so cloning N models one paste call at a time costs N
+rebuilds. `pasteModelSupports` takes every target of one gesture and merges them
+into a single write. `npm run bench:duplicate-confirm` measures the duplicate
+confirm end to end; `MODELS`, `SUPPORTS`, `DUPS` and `RUNS` override its scenario.
+
+**One pointer move raycasts every object with a hover handler.** R3F calls
+`raycaster.intersectObject` for each object that registers a pointer-move
+handler — its event system filters the scene's interaction list down to those —
+so the cost of a hover is the sum over those objects, not the one under the
+cursor. Two shapes dominate, both measured with the app's own three.js:
+
+| object | cost per pointer move |
+| --- | --- |
+| `InstancedMesh` with N instances (proxy supports) | ~0.11 µs × N — 3 ms at 25k, 13 ms at 100k |
+| merged `Mesh` of T triangles with no `boundsTree` (raft proxy) | ~0.35 µs × T — 7 ms for 20×5k, 50 ms for 20×20k |
+| the same mesh with a `boundsTree` | ~0.12 ms, flat |
+
+`InstancedMesh.raycast` loops every instance once the mesh's whole bounding
+sphere is hit, and a support batch spans the plate, so any ray over the plate
+pays for all of it. three-mesh-bvh cannot accelerate it. A batch that must
+answer hover therefore needs a `raycast` of its own: the shaft batch indexes its
+instances into cells and tests only the cells the ray crosses
+(`src/supports/proxyHoverIndex.ts`), built inside `InstancedShaftGroup` from the
+list that mesh draws, since a target's `index` is the instance index the event
+reports and a batch that filters its input — zero-length shafts are not drawn —
+would otherwise shift every index against the drawn list. Give raycast-only
+merged geometries a bounds tree.
+
+**A grid belongs to a mesh, not to a kind of primitive.** The shafts, roots,
+joints and cones are drawn by four different components, and three of them split
+their instances into buckets by geometry parameters — hundreds of small meshes,
+some holding a single instance. Handing one whole-kind grid to those groups means
+every bucket asks the *whole* grid: measured on an 18-model plate, 448 meshes per
+pointer move, 157k segment tests and 35 ms, against 2 meshes, 727 tests and 14 ms
+with three's own raycast on the buckets. The index in a target is also the index
+inside the batch the grid was built from, which a bucket's `instanceId` is not.
+Grids go to the batch that spans the plate and is 1:1 with its instances; a small
+bucket is better off with three's own raycast.
+
+**A colour change is per model, so write it per model.** The proxy batches tint
+by writing per-instance colours, and a selection or a hover moves the colour of
+one or two models. Rewriting every instance and re-uploading the whole buffer
+made a hover that moves between models cost ~70 ms in a development build, with
+~18% of it in the colour pass — mostly `Color.toArray` inside `setColorAt`, run
+once per instance per bucket. `writeInstanceColors`
+(`src/supports/SupportPrimitives/instanceColorWriter.ts`) groups a batch by model
+once, compares the resolved colour per model, and writes only the instances of
+the models that moved.
+
 **The observer is a suspect.** In one session the Web Inspector killed the
 process, editing the worktree restarted the app under a running test, the stall
 detector invented hundreds of freezes, and the progress reporting doubled the
@@ -173,6 +232,88 @@ runtime. When a measurement surprises you, question the instrument before the
 code.
 
 ## External profilers
+
+### Windows: drive the app over CDP
+
+WebView2 takes `--remote-debugging-port`, so the real app — with its Tauri
+commands, its own file loading and a real GPU — can be driven and profiled from a
+script. No Playwright install: `npm run profile:df` talks CDP over Node's built-in
+`WebSocket`.
+
+```bash
+npm run dev                                              # the debug exe loads localhost:3005
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 \
+  src-tauri/target/debug/dragonfruit-desktop.exe path/to/scene.voxl
+```
+
+```bash
+npm run profile:df -- eval "document.title"
+npm run profile:df -- hover 0.58 0.5 40          # 40 trusted moves, profiled
+npm run profile:df -- sweep 0 0 60 '[[0.25,0.5],[0.583,0.5]]'   # between two models
+npm run profile:df -- click 0.35 0.6
+npm run profile:df -- clickdom 'button[aria-label="Hide"]' 0    # click UI by selector
+npm run profile:df -- scan 6 5                   # which screen cells hit a model
+npm run profile:df -- shot out.png 0.35 0.6      # screenshot, pointer parked there
+npm run profile:df -- fps 4 [move]               # frames per second, pointer still or moving
+npm run profile:df -- drag 0.5 0.6 0.5 0.4 right # right-drag orbits, middle pans
+npm run profile:df -- zoom 0.4 0.6 8 -120        # wheel at a point
+CDP_FILTER=raycast npm run profile:df -- hover 0.58 0.5 60
+```
+
+Draw calls and triangles per frame are not reachable through the app's own
+objects, but they are through the context: patch
+`drawElements` / `drawElementsInstanced` on the canvas's WebGL prototype from
+`eval` and sample for a second. That is how the 3282 draw calls behind a 53 fps
+frame were found (see `docs/dev/backlog.md`).
+
+`CDP_STACK=<regex>` prints the ancestry of the hottest frame matching it, which is
+how a 19-second stall was traced to the raft clustering rather than the supports
+that looked responsible. When a frame's *caller* is what you need and the profile
+cannot name it — a memo body, a closure — write a counter or a stack into a global
+from the code under suspicion and read it back with `eval`:
+
+```js
+const g = globalThis; (g.__calls ??= []).push(new Error().stack);
+```
+
+That is a temporary edit, and it must be reverted before committing.
+
+Input goes through CDP, so it is trusted and the app's handlers run; the profile
+covers the React commits and R3F renders that follow the gesture, not just the
+handler. Two things it taught, worth knowing before trusting a number: a gesture
+that lands on the *same* model every time never changes the hover state, so it
+measures the raycast and nothing else — `sweep` between two models to see the
+colour path; and the development build's `jsxDEV`, `measure` and React element
+churn dominate any profile that re-renders the scene, so compare two runs of the
+same build rather than reading absolute milliseconds.
+
+`scan` prints what a cell resolves to, which is how you find a point over a model
+without guessing the camera: hover a grid and read back
+`window.__dragonfruitLastImmediateModelHoverId`.
+
+**Sandbox the instance. Do not drive the user's window.** The app takes a scene
+path as an argument and hands it to an already-running instance through
+`tauri-plugin-single-instance`, so launching a second copy while the user has one
+open loads the file *into their window* — and, without an isolated profile, the
+scene they already had stays loaded, so the two accumulate. Every launch must:
+
+```bash
+mkdir -p "$TMP/df-sandbox/webview"
+cp scene.voxl "$TMP/df-sandbox/scene.voxl"     # sidecar autosaves stay out of the way
+WEBVIEW2_USER_DATA_FOLDER="$TMP\df-sandbox\webview" \
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" \
+  src-tauri/target/debug/dragonfruit-desktop.exe "$TMP/df-sandbox/scene.voxl"
+```
+
+The separate user-data folder isolates localStorage, so nothing of theirs is
+restored into the sandbox. **Delete the copy's autosave sidecar before every
+launch.** The app autosaves next to the scene it opened, so a sandbox scene copy
+grows a `<name>_autosave.voxl`; the next launch restores *that* and then loads the
+CLI argument on top, and the scene quietly doubles - 17 models became 34, twice,
+before the sidecar was noticed. Check that no instance is running before launching,
+and when shutting down kill only the PID you started — never every
+`dragonfruit-desktop.exe` on the machine. The log file is shared and cannot be
+redirected, so the sandbox's lines land in the user's log.
 
 ### macOS: `sample` and flame graphs
 

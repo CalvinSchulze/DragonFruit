@@ -75,7 +75,7 @@ nav:
       - Anatomy of Supports:
           - Overview: reference/support-anatomy/index.md
           - Roots: reference/support-anatomy/roots.md
-          - Anchor: reference/support-anatomy/anchor.md
+          - Stump: reference/support-anatomy/stump.md
           - Trunk: reference/support-anatomy/trunk.md
           - Branch: reference/support-anatomy/branch.md
           - Leaf: reference/support-anatomy/leaf.md
@@ -93,6 +93,9 @@ nav:
       - Support Placement Modifiers: reference/support-placement-modifiers.md
       - Support Types: reference/support-types.md
       - File Formats: reference/file-formats.md
+      - Auto-Support Settings: reference/auto-support-settings.md
+      - Auto-Support Preset Format: reference/auto-support-preset-format.md
+      - Command-Line Interface: reference/cli.md
   - Troubleshooting:
       - Common Issues: troubleshooting/common-issues.md
   - Developer Guide:
@@ -101,7 +104,10 @@ nav:
           - Architecture: dev/architecture-overview.md
           - page.tsx Refactor Handoff: dev/page-tsx-refactor-handoff.md
           - Contributing: dev/contributing.md
+          - Preview Builds and CI Permissions: dev/preview-builds.md
+          - Localization (i18n): dev/localization.md
           - Backlog and Known Gotchas: dev/backlog.md
+          - Support Registry Findings: dev/support-registry-findings.md
           - Performance Debugging: dev/performance-debugging.md
       - Feature Frameworks:
           - Experiments Framework: dev/experiments-framework.md
@@ -111,19 +117,37 @@ nav:
           - History and Undo/Redo: dev/history-and-undo-redo.md
           - Registration Seams: dev/registration-seams.md
           - State and Stores: dev/state-and-stores.md
+          - Camera Navigation: dev/camera-navigation.md
           - Config Schemas: dev/config-schemas.md
           - Tauri IPC and Native Bridge: dev/tauri-ipc-bridge.md
           - Hotkeys: dev/hotkeys.md
           - Notifications and Toasts: dev/notifications.md
-      - Support System:
+          - System Notifications: dev/system-notifications.md
           - Support System: dev/support-system.md
+          - Support Interaction: dev/support-interaction.md
           - Auto-Supports: dev/auto-supports.md
+          - Auto-Support Presets: dev/auto-support-presets.md
+          - Auto-Support Metrics: dev/auto-support-metrics.md
+          - Auto-Support Worker: dev/auto-support-worker.md
           - Auto-Orientation (Pre-Plan): dev/auto-orientation.md
           - Adding a New Support Type: dev/support-type-extension.md
           - Support Pathfinding V3: dev/support-pathfinding-v3.md
           - Grid and Branching: dev/grid-and-branching.md
           - Raft Geometry: dev/raft-geometry.md
           - Scan Positioning: dev/scan-positioning.md
+          - Island Detection: dev/island-detection.md
+      - Slicing Engine:
+          - Overview: dev/slicing-engine/index.md
+          - Architecture: dev/slicing-engine/architecture.md
+          - Pipeline: dev/slicing-engine/pipeline.md
+          - API: dev/slicing-engine/api.md
+          - Encoders: dev/slicing-engine/encoders.md
+          - Tauri Integration: dev/slicing-engine/tauri-integration.md
+          - Slice Job Assembly: dev/slice-job-assembly.md
+          - Benchmarking: dev/slicing-engine/benchmarking.md
+          - Benchmark Suite: dev/slicing-benchmarks.md
+          - Development Guide: dev/slicing-engine/development-guide.md
+          - Troubleshooting: dev/slicing-engine/troubleshooting.md
       - Data and Formats:
           - Data Storage: dev/data-storage.md
           - Formats: dev/formats.md
@@ -145,7 +169,14 @@ nav:
           - Cut the Surface, Not a Volume: adr/0037-cut-the-surface-not-a-volume.md
           - Island Scan Data Shapes: adr/0039-island-scan-data-shapes.md
           - Linux CEF Runs on X11: adr/0040-linux-cef-windowing-x11.md
+          - Flatpak Ships No Thumbnailer: adr/0041-flatpak-thumbnailer.md
           - Organic Cut Surface Redesign: dev/organic-cut-surface-redesign.md
       - Integration and Operations:
           - RTSP Relay: dev/rtsp-relay.md
           - Release Process: dev/releases.md
+          - Flatpak Packaging: dev/flatpak.md
+          - Issue Guts Labels: dev/issue-guts.md
+          - Retuning Issue Guts: dev/issue-guts-tuning.md
+          - OS Thumbnails:
+              - Overview: dev/voxl-thumbnail/index.md
+              - macOS QuickLook Extension: dev/voxl-thumbnail/macos-quicklook.md

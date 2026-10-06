@@ -16,9 +16,9 @@ import {
     normalizeFormatVersion,
     normalizeSettingsMode,
     normalizeWebcamRotationDeg,
-    DEFAULT_OUTPUT_FORMAT,
     DEFAULT_WEBCAM_ROTATION_DEG,
 } from '@/features/profiles/outputFormatUtils';
+import { hasWindow } from '@/utils/dom';
 
 export type PrinterOutputFormat = string;
 export type PrinterNetworkSupport = string;
@@ -255,6 +255,7 @@ export type MaterialAntiAliasingSettings = {
     tipOffsetMode: 'disabled' | 'auto' | 'manual';
     tipOffsetMm: number;
     tipOffsetDisplayInUi: boolean;
+    supportTipShrinkPercent: number;
 };
 
 export const DEFAULT_MATERIAL_ANTI_ALIASING_SETTINGS: MaterialAntiAliasingSettings = {
@@ -284,9 +285,10 @@ export const DEFAULT_MATERIAL_ANTI_ALIASING_SETTINGS: MaterialAntiAliasingSettin
     ditherEnabled: false,
     ditherBitDepth: 8,
     ditherDeviceGamma: 2.2,
-    tipOffsetMode: 'disabled',
+    tipOffsetMode: 'auto',
     tipOffsetMm: 0.05,
     tipOffsetDisplayInUi: false,
+    supportTipShrinkPercent: 10,
 };
 
 const MATERIAL_PROFILE_LOCAL_OVERRIDE_KEYS = new Set<keyof MaterialProfile>([
@@ -366,8 +368,8 @@ function sanitizeMaterialAntiAliasingSettings(input: unknown): MaterialAntiAlias
     const levelRaw = typeof source.level === 'string' ? source.level.trim().toLowerCase() : defaults.level;
     const levelSteps = Number(levelRaw.endsWith('x') ? levelRaw.slice(0, -1) : levelRaw);
     const level = `${Math.max(2, Math.min(64, Number.isFinite(levelSteps) ? Math.round(levelSteps) : 4))}x`;
-    const tipOffsetMode = source.tipOffsetMode === 'auto' || source.tipOffsetMode === 'manual' 
-        ? source.tipOffsetMode 
+    const tipOffsetMode = source.tipOffsetMode === 'auto' || source.tipOffsetMode === 'manual' || source.tipOffsetMode === 'disabled'
+        ? source.tipOffsetMode
         : defaults.tipOffsetMode;
 
     const enableCustomSettings = typeof source.enableCustomSettings === 'boolean'
@@ -406,6 +408,9 @@ function sanitizeMaterialAntiAliasingSettings(input: unknown): MaterialAntiAlias
         tipOffsetMode,
         tipOffsetMm: Number.isFinite(Number(source.tipOffsetMm)) ? Number(source.tipOffsetMm) : defaults.tipOffsetMm,
         tipOffsetDisplayInUi: Boolean(source.tipOffsetDisplayInUi ?? defaults.tipOffsetDisplayInUi),
+        supportTipShrinkPercent: source.supportTipShrinkPercent == null
+            ? defaults.supportTipShrinkPercent
+            : Math.round(clampNumber(source.supportTipShrinkPercent, defaults.supportTipShrinkPercent, 0, 90)),
     };
 }
 
@@ -434,7 +439,8 @@ function sanitizeLocalSettingsByOutput(input: unknown): Record<string, LocalMate
     Object.entries(source).forEach(([outputFormatRaw, value]) => {
         const outputFormat = normalizeOutputFormat(outputFormatRaw);
         const sanitized = sanitizeLocalMaterialSettingsMap(value);
-        if (!sanitized) return;
+        // A key that is not a format has nothing to key settings by.
+        if (!sanitized || !outputFormat) return;
         next[outputFormat] = sanitized;
     });
 
@@ -502,6 +508,9 @@ function resolveMaterialProfileWithLocalSettings(
     if (!printerProfile) return materialProfile;
 
     const normalizedOutput = normalizeOutputFormat(printerProfile.display.outputFormat);
+    // A printer profile with no resolvable format has no plugin-owned material
+    // settings to apply, so the material stays as it is.
+    if (!normalizedOutput) return materialProfile;
     const outputWithoutDot = normalizedOutput.replace(/^\./, '');
     const adapter = getProfileLocalMaterialSettingsAdapter(
         normalizedOutput,
@@ -600,7 +609,7 @@ function readActiveMaterialByPrinterProfileFromStorage(): Record<string, string>
         return { ...activeMaterialByPrinterProfileCache };
     }
 
-    if (typeof window === 'undefined') return {};
+    if (!hasWindow()) return {};
 
     const raw = window.localStorage.getItem(ACTIVE_MATERIAL_BY_PRINTER_PROFILE_STORAGE_KEY)
         ?? window.sessionStorage.getItem(ACTIVE_MATERIAL_BY_PRINTER_PROFILE_STORAGE_KEY);
@@ -628,7 +637,7 @@ function readActiveMaterialByPrinterProfileFromStorage(): Record<string, string>
 }
 
 function writeActiveMaterialByPrinterProfileToStorage(next: Record<string, string>): void {
-    if (typeof window === 'undefined') return;
+    if (!hasWindow()) return;
 
     const sanitized: Record<string, string> = {};
     Object.entries(next).forEach(([printerId, materialId]) => {
@@ -871,7 +880,7 @@ const BUILTIN_PRINTER_PRESETS: PrinterPreset[] = (printerPresetsData as PrinterP
     ...preset,
     display: {
         ...preset.display,
-        outputFormat: normalizeOutputFormat(preset.display?.outputFormat),
+        outputFormat: normalizeOutputFormat(preset.display?.outputFormat) ?? '',
         formatVersion: normalizeFormatVersion((preset.display as { formatVersion?: unknown } | undefined)?.formatVersion),
         settingsMode: normalizeSettingsMode((preset.display as { settingsMode?: unknown } | undefined)?.settingsMode),
         webcamRotationDeg: normalizeWebcamRotationDeg(
@@ -1136,7 +1145,9 @@ function sanitizeState(input: Partial<ProfileStoreState> | null | undefined): Pr
                     display: {
                         resolutionX: Number(rawDisplay?.resolutionX) || fallbackDisplay?.resolutionX || 2560,
                         resolutionY: Number(rawDisplay?.resolutionY) || fallbackDisplay?.resolutionY || 1620,
-                        outputFormat: normalizeOutputFormat(rawDisplay?.outputFormat ?? fallbackDisplay?.outputFormat),
+                        outputFormat: normalizeOutputFormat(rawDisplay?.outputFormat)
+                            ?? normalizeOutputFormat(fallbackDisplay?.outputFormat)
+                            ?? '',
                         formatVersion: normalizeFormatVersion(rawDisplay?.formatVersion ?? fallbackDisplay?.formatVersion),
                         settingsMode: normalizeSettingsMode(rawDisplay?.settingsMode ?? fallbackDisplay?.settingsMode),
                         webcamRotationDeg: normalizeWebcamRotationDeg(
@@ -1299,7 +1310,7 @@ function sanitizeState(input: Partial<ProfileStoreState> | null | undefined): Pr
 }
 
 function persist(next: ProfileStoreState): void {
-    if (typeof window === 'undefined') return;
+    if (!hasWindow()) return;
     try {
         const payload: PersistedProfileStoreEnvelope = {
             version: PROFILE_STORE_SCHEMA_VERSION,
@@ -1333,14 +1344,14 @@ function parsePersistedState(raw: string | null): Partial<ProfileStoreState> | n
 }
 
 function ensureHydrated(): void {
-    if (typeof window === 'undefined') return;
+    if (!hasWindow()) return;
     if (isHydrated) return;
     hydratePluginRegistry();
     hydrateProfilesFromStorage();
 }
 
 export function hydrateProfilesFromStorage(): void {
-    if (typeof window === 'undefined') return;
+    if (!hasWindow()) return;
     if (isHydrated) return;
 
     isHydrated = true;
@@ -1617,7 +1628,7 @@ export function addPrinterProfile(partial?: Partial<Omit<PrinterProfile, 'id'>>)
         display: {
             resolutionX: partial?.display?.resolutionX ?? 2560,
             resolutionY: partial?.display?.resolutionY ?? 1620,
-            outputFormat: normalizeOutputFormat(partial?.display?.outputFormat),
+            outputFormat: normalizeOutputFormat(partial?.display?.outputFormat) ?? '',
             formatVersion: normalizeFormatVersion(partial?.display?.formatVersion),
             settingsMode: normalizeSettingsMode(partial?.display?.settingsMode),
             webcamRotationDeg: normalizeWebcamRotationDeg(
@@ -1741,7 +1752,7 @@ export function addPrinterProfileFromPreset(presetId: string): string {
         display: {
             resolutionX: preset.display.resolutionX,
             resolutionY: preset.display.resolutionY,
-            outputFormat: normalizeOutputFormat(preset.display.outputFormat),
+            outputFormat: normalizeOutputFormat(preset.display.outputFormat) ?? '',
             formatVersion: normalizeFormatVersion((preset.display as { formatVersion?: unknown }).formatVersion),
             settingsMode: normalizeSettingsMode((preset.display as { settingsMode?: unknown }).settingsMode),
             webcamRotationDeg: normalizeWebcamRotationDeg(
@@ -1934,7 +1945,9 @@ export function updatePrinterProfile(id: string, updates: Partial<Omit<PrinterPr
                 ? {
                     resolutionX: Number(appliedUpdates.display.resolutionX) || profile.display.resolutionX,
                     resolutionY: Number(appliedUpdates.display.resolutionY) || profile.display.resolutionY,
-                    outputFormat: normalizeOutputFormat(appliedUpdates.display.outputFormat ?? profile.display.outputFormat),
+                    outputFormat: normalizeOutputFormat(appliedUpdates.display.outputFormat)
+                        ?? normalizeOutputFormat(profile.display.outputFormat)
+                        ?? profile.display.outputFormat,
                     formatVersion: normalizeFormatVersion(appliedUpdates.display.formatVersion ?? profile.display.formatVersion),
                     settingsMode: normalizeSettingsMode(appliedUpdates.display.settingsMode ?? profile.display.settingsMode),
                     webcamRotationDeg: normalizeWebcamRotationDeg(
@@ -2315,7 +2328,7 @@ export function importPrinterBundle(payload: unknown): string {
         display: {
             resolutionX: sourcePrinter.display?.resolutionX ?? 2560,
             resolutionY: sourcePrinter.display?.resolutionY ?? 1620,
-            outputFormat: normalizeOutputFormat(sourcePrinter.display?.outputFormat),
+            outputFormat: normalizeOutputFormat(sourcePrinter.display?.outputFormat) ?? '',
             formatVersion: normalizeFormatVersion(sourcePrinter.display?.formatVersion),
             settingsMode: normalizeSettingsMode(sourcePrinter.display?.settingsMode),
             webcamRotationDeg: normalizeWebcamRotationDeg(
@@ -2768,7 +2781,9 @@ export function applyOfficialPrinterProfileUpdate(printerProfileId: string): App
                     display: {
                         resolutionX: preset.display.resolutionX,
                         resolutionY: preset.display.resolutionY,
-                        outputFormat: normalizeOutputFormat(preset.display.outputFormat),
+                        outputFormat: normalizeOutputFormat(preset.display.outputFormat)
+                            ?? normalizeOutputFormat(item.display.outputFormat)
+                            ?? item.display.outputFormat,
                         formatVersion: normalizeFormatVersion((preset.display as { formatVersion?: unknown }).formatVersion),
                         settingsMode: normalizeSettingsMode((preset.display as { settingsMode?: unknown }).settingsMode),
                         mirrorX: normalizeMirrorFlag((preset.display as { mirrorX?: unknown }).mirrorX, false),

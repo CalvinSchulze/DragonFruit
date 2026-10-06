@@ -2,8 +2,6 @@
  * Selection System - Type Definitions
  */
 
-import * as THREE from 'three';
-
 /**
  * Selectable object types
  */

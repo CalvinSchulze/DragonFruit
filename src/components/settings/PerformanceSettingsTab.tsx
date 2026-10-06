@@ -6,14 +6,13 @@ import type { SlicingPerformanceSettings } from '@/components/settings/performan
 import { cleanupAllPrintTempArtifacts, cleanupStalePrintTempArtifacts } from '@/features/slicing/tauri/nativeSlicerBridge';
 
 const SLICING_ENGINE_CRATE = 'dragonfruit-slicing-engine';
-const SLICING_ENGINE_VERSION = '3.1.0';
+
 
 export type SlicingThumbnailRenderSettings = {
   includeGradient: boolean;
   includeBuildPlate: boolean;
   includeGrid: boolean;
 };
-
 interface PerformanceSettingsTabProps {
   settings: SlicingPerformanceSettings;
   onChange: (settings: SlicingPerformanceSettings) => void;
@@ -40,6 +39,19 @@ export function PerformanceSettingsTab({
     });
   }, [onThumbnailSettingsChange, thumbnailSettings]);
 
+  // Null until the native side answers; outside Tauri it never does.
+  const [engineVersion, setEngineVersion] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const v = await invoke<string>('get_slicer_engine_version');
+        if (!cancelled && typeof v === 'string' && v.trim()) setEngineVersion(v.trim());
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const pngCompressionMode: 'auto' | 'on' | 'off' = settings.pngCompressionStrategy === 'auto'
     ? 'auto'
     : settings.pngCompressionStrategy === 'fastest'
@@ -84,7 +96,7 @@ export function PerformanceSettingsTab({
             </div>
             <div>
               <div style={{ color: 'var(--text-muted)' }}>Version</div>
-              <div className="font-semibold" style={{ color: 'var(--text-strong)' }}>{SLICING_ENGINE_VERSION}</div>
+              <div className="font-semibold" style={{ color: 'var(--text-strong)' }}>{engineVersion ?? '-'}</div>
             </div>
           </div>
         </div>

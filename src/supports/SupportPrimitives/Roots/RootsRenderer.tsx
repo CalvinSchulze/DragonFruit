@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import { Roots } from '../../types';
 import { useSyncExternalStore } from 'react';
 import { getRaftSettings, subscribeToRaftStore } from '../../Rafts/Crenelated/RaftState';
-import { subscribeToSettings, getSettingsSnapshot } from '../../Settings';
 
 interface RootsRendererProps {
     root: Roots;
@@ -13,7 +12,7 @@ interface RootsRendererProps {
     emissiveIntensity?: number;
     transparent?: boolean;
     opacity?: number;
-    raycast?: any;
+    raycast?: THREE.Object3D['raycast'];
     diskColor?: string; // Granular override for base disk
     coneColor?: string; // Granular override for cone part
     diskMaterialOverride?: { transparent?: boolean; opacity?: number; depthWrite?: boolean };
@@ -48,21 +47,14 @@ export function RootsRenderer({
     sphereSegments = 24,
 }: RootsRendererProps & { raftOverride?: { bottomMode: 'off' | 'solid' | 'line'; thickness: number } }) {
     const storeRaft = useSyncExternalStore(subscribeToRaftStore, getRaftSettings, getRaftSettings);
-    const settings = useSyncExternalStore(subscribeToSettings, getSettingsSnapshot, getSettingsSnapshot);
 
     // Use override if provided, otherwise use store
     const raft = raftOverride || storeRaft;
-
-    const rootsSettings = settings.roots;
 
     // Use root properties directly (populated by builder, supports overrides)
     const diskHeight = root.diskHeight;
     const coneHeight = root.coneHeight;
 
-    // When a raft is enabled, the roots should sit on top of the raft with a very thin
-    // overlap disk.
-    const hasSolidBottom = (raft as any).bottomMode === 'solid';
-    const raftThickness = (raft as any).thickness ?? 0;
     const effectiveDiskHeight = diskHeight;
     const verticalOffset = 0;
 

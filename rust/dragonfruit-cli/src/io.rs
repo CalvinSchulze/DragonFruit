@@ -13,6 +13,41 @@ use dragonfruit_slicing_engine::geometry::parse_triangles;
 use dragonfruit_islands::model::{RleLabels, RleMask};
 
 // ---------------------------------------------------------------------------
+// Slice job
+// ---------------------------------------------------------------------------
+
+/// Builds a slice job from the payload the app hands the native slicer
+/// (`toNativeMetadataPayload` in `nativeSlicerBridge.ts`), with the mesh from
+/// the input file instead of the app's staging buffer.
+///
+/// The payload's own fields win, the layer count included. Its mesh transport
+/// fields (`output_path`, `mesh_encoding`, `mesh_quantization`) describe the
+/// app's buffer and are ignored. A zero `model_triangle_count` means the
+/// payload did not know the mesh, and the input file's count is used.
+pub fn slice_job_from_json(
+    text: &str,
+    triangles_xyz: Vec<f32>,
+    file_model_triangle_count: u32,
+) -> Result<dragonfruit_slicing_engine::types::SliceJobV3, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Invalid slice job JSON: {e}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or("The slice job must be a JSON object")?;
+    if object.contains_key("triangles_xyz") {
+        return Err("The slice job must not carry triangles_xyz; the mesh comes from the input file".into());
+    }
+    object.insert("triangles_xyz".into(), serde_json::Value::Array(Vec::new()));
+    let mut job: dragonfruit_slicing_engine::types::SliceJobV3 =
+        serde_json::from_value(value).map_err(|e| format!("Invalid slice job: {e}"))?;
+    job.triangles_xyz = triangles_xyz;
+    if job.model_triangle_count == 0 {
+        job.model_triangle_count = file_model_triangle_count;
+    }
+    Ok(job)
+}
+
+// ---------------------------------------------------------------------------
 // STL Loading
 // ---------------------------------------------------------------------------
 
@@ -1467,6 +1502,67 @@ mod tests {
         let job: SliceJobV3 = serde_json::from_str(job_json).unwrap();
         assert_eq!(job.format_version, None);
         assert!(job.minimum_aa_alpha_percent >= 0.0);
+    }
+
+    // -- Slice job from the app's payload --
+
+    /// The shape `toNativeMetadataPayload` emits, mesh transport fields included.
+    const APP_JOB: &str = r#"{
+        "output_format": ".ctb", "format_version": "v5enc", "output_path": null,
+        "source_width_px": 120, "source_height_px": 80, "width_px": 40, "height_px": 80,
+        "x_packing_mode": "rgb8_div3", "png_compression_strategy": "balanced",
+        "anti_aliasing_level": "8x", "anti_aliasing_mode": "Vertical2",
+        "blur_brush_radius_px": 2, "blur_brush_kernel": "gaussian",
+        "blur_brush_sigma_x": 0.5, "blur_brush_sigma_y": 0.5,
+        "z_blur_radius_layers": 1, "z_blur_kernel": "box", "z_blur_sigma": 0.5,
+        "aa_on_supports": false, "minimum_aa_alpha_percent": 35,
+        "mirror_x": true, "mirror_y": false,
+        "z_blend_look_back": 5, "z_blend_minimum_alpha_percent": 35, "z_blend_max_alpha_percent": 90,
+        "z_blend_custom_lut": [0, 120, 255], "zaa_kernel": "perturb", "zaa_pattern": "halton",
+        "model_triangle_count": 0, "container_compression_level": 3,
+        "build_width_mm": 60, "build_depth_mm": 40, "layer_height_mm": 0.05, "total_layers": 123,
+        "export_thumbnail_png_base64": null, "mesh_encoding": "raw_f32", "mesh_quantization": null,
+        "metadata_json": "{\"version\":2}",
+        "dither_enabled": false, "dither_bit_depth": null, "dither_device_gamma": 2.2
+    }"#;
+
+    #[test]
+    fn slice_job_from_json_keeps_every_field_the_app_sends() {
+        let job = slice_job_from_json(APP_JOB, vec![0.0; 18], 2).unwrap();
+        assert_eq!(job.output_format, ".ctb");
+        assert_eq!(job.format_version.as_deref(), Some("v5enc"));
+        assert_eq!(job.x_packing_mode, "rgb8_div3");
+        assert_eq!((job.width_px, job.height_px), (40, 80));
+        assert_eq!(job.anti_aliasing_mode, "Vertical2");
+        assert_eq!(job.z_blend_look_back, 5);
+        assert_eq!(job.z_blend_custom_lut.as_deref(), Some(&[0u8, 120, 255][..]));
+        assert_eq!(job.zaa_pattern.as_deref(), Some("halton"));
+        assert_eq!(job.container_compression_level, 3);
+        assert_eq!(job.total_layers, 123, "the payload's layer count wins");
+        assert!(job.mirror_x);
+        assert_eq!(job.metadata_json, "{\"version\":2}");
+        assert_eq!(job.triangles_xyz.len(), 18);
+        assert_eq!(job.model_triangle_count, 2, "zero means the file's count");
+    }
+
+    #[test]
+    fn slice_job_from_json_keeps_a_known_model_triangle_count() {
+        let text = APP_JOB.replace("\"model_triangle_count\": 0", "\"model_triangle_count\": 1");
+        let job = slice_job_from_json(&text, vec![0.0; 18], 2).unwrap();
+        assert_eq!(job.model_triangle_count, 1);
+    }
+
+    #[test]
+    fn slice_job_from_json_refuses_inline_triangles() {
+        let text = APP_JOB.replacen('{', "{ \"triangles_xyz\": [0,0,0,0,0,0,0,0,0],", 1);
+        let err = slice_job_from_json(&text, Vec::new(), 0).unwrap_err();
+        assert!(err.contains("triangles_xyz"), "{err}");
+    }
+
+    #[test]
+    fn slice_job_from_json_reports_a_missing_field() {
+        let err = slice_job_from_json(r#"{ "output_format": ".ctb" }"#, Vec::new(), 0).unwrap_err();
+        assert!(err.starts_with("Invalid slice job"), "{err}");
     }
 
     #[test]

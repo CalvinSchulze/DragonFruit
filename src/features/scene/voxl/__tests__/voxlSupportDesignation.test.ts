@@ -15,6 +15,7 @@ import {
 } from '../codec';
 import type { BuildVoxlDocumentInput, VoxlModelRuntimeLike } from '../types';
 import type { DragonfruitImportFormat } from '@/supports/types';
+import { installFakeWindow } from '@/utils/__tests__/helpers/fakeWindow';
 
 const EMPTY_SUPPORTS: DragonfruitImportFormat = {
   version: 1,
@@ -158,13 +159,13 @@ test('classifyFromGeometry with assumeSupportGeometry: true preserves likely_sup
 
   let capturedOptionsJson: string | undefined;
 
-  (globalThis as any).window = {
+  const restoreWindow = installFakeWindow({
     __TAURI_INTERNALS__: {
-      invoke: async (cmd: string, args?: any) => {
+      invoke: async (cmd: string, args?: { optionsJson?: string }) => {
         if (cmd === 'stage_mesh_binary_set') return;
         if (cmd === 'mesh_classify_staged') {
           capturedOptionsJson = args?.optionsJson;
-          const parsed = JSON.parse(args.optionsJson);
+          const parsed = JSON.parse(args?.optionsJson ?? '{}');
           return JSON.stringify({
             version: 1,
             pre: { triangle_count: 1 },
@@ -182,7 +183,7 @@ test('classifyFromGeometry with assumeSupportGeometry: true preserves likely_sup
         throw new Error(`Unexpected command: ${cmd}`);
       },
     },
-  };
+  });
 
   try {
     const result = await classifyFromGeometry(geom, { assumeSupportGeometry: true });
@@ -192,6 +193,6 @@ test('classifyFromGeometry with assumeSupportGeometry: true preserves likely_sup
     assert.equal(parsed.assume_support_geometry, true);
     assert.equal(result.report.likely_support_geometry, true);
   } finally {
-    delete (globalThis as any).window;
+    restoreWindow();
   }
 });

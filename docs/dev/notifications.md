@@ -1,11 +1,13 @@
 # Notifications and Toasts
 
-!!! warning "There is no notification system"
-    This page documents what exists, not a design. There is no queue, no
-    `pushToast()`, and no shared lifetime. A toast is a pair of `useState`
-    values plus its own timers, and adding one means writing another. Read this
-    before adding a toast so you at least copy the right pattern — and see the
-    consolidation entry in the internal backlog before deciding it is fine.
+!!! note "Two systems: pick by surface"
+    Bottom-corner toasts follow the shell pattern below (`useEditorToasts` state
+    pair + timers, block in `NotificationStack`) — the orientation receipt uses
+    it. `pushSystemNotification()` in
+    `src/features/notifications/systemNotificationStore.ts` (rendered by
+    `SystemNotificationStack`) is the notification-center queue for richer
+    title/subtitle/action cards. The six legacy shell toasts predate both —
+    leave them until the consolidation in the internal backlog lands.
 
 ## The three paths
 

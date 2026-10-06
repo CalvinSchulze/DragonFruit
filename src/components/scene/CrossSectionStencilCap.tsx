@@ -27,6 +27,15 @@ type CrossSectionStencilCapProps = {
   liveTransformsRef?: React.RefObject<CrossSectionLiveTransforms | null>;
   sourceObject?: THREE.Object3D | null;
   sourceObjectVersion?: unknown;
+  /**
+   * Extra roots to collect stencil geometry from, for geometry that does not live
+   * under `sourceObject`: in select mode the active model's supports are parented
+   * to its own group, while the world's stay in the support drag group, and a cap
+   * that only saw one of them closed neither.
+   */
+  extraSources?: ReadonlyArray<THREE.Object3D | null | undefined>;
+  /** A stable token for `extraSources`, which is rebuilt on every render. */
+  extraSourcesKey?: unknown;
   skipSourceZBounds?: boolean;
   y: number;
   /** The y position of the OTHER clip boundary (if dual-cut is active).
@@ -366,6 +375,8 @@ function CrossSectionStencilCapInner({
   liveTransformsRef,
   sourceObject,
   sourceObjectVersion,
+  extraSources,
+  extraSourcesKey,
   skipSourceZBounds = false,
   y,
   otherClipY,
@@ -559,12 +570,32 @@ function CrossSectionStencilCapInner({
   const [postCommitTraversalKey, setPostCommitTraversalKey] = React.useState(0);
   React.useLayoutEffect(() => {
     setPostCommitTraversalKey((k) => k + 1);
-  }, [sourceObjectVersion]);
+  }, [sourceObjectVersion, extraSourcesKey]);
 
   const staticSourceEntries = React.useMemo<StaticStencilEntry[]>(() => {
-    if (!sourceObject) return [];
-
     const results: StaticStencilEntry[] = [];
+    const roots = [sourceObject, ...(extraSources ?? [])].filter((root): root is THREE.Object3D => Boolean(root));
+    for (const root of roots) {
+      collectStaticStencilEntries(root, skipSourceZBounds, results);
+    }
+    return results;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the extras are read here but keyed through `extraSourcesKey` and the post-commit counter, so the traversal runs on the render after the scene graph moved rather than during it.
+  }, [skipSourceZBounds, sourceObject, postCommitTraversalKey]);
+
+/**
+ * Collect the stencil geometry under one root.
+ *
+ * The supports a cap has to close are not always under a single object: in select
+ * mode the active model's supports are parented to its own group, and the world's
+ * are in the support drag group, so the cap takes both roots. Counting a mesh
+ * twice is harmless - the cap draws where the stencil is non-zero, and +2 or -2
+ * is still non-zero.
+ */
+function collectStaticStencilEntries(
+    sourceObject: THREE.Object3D,
+    skipSourceZBounds: boolean,
+    results: StaticStencilEntry[],
+): void {
     const instanceMatrix = new THREE.Matrix4();
     const worldInstanceMatrix = new THREE.Matrix4();
 
@@ -722,9 +753,7 @@ function CrossSectionStencilCapInner({
         maxZ: bounds.max,
       });
     });
-
-    return results;
-  }, [skipSourceZBounds, sourceObject, postCommitTraversalKey]);
+}
 
   const modelStencilEntryCacheRef = React.useRef<Map<string, {
     signature: string;
@@ -947,6 +976,7 @@ const areCrossSectionStencilCapPropsEqual = (
     && prev.liveTransformsRef === next.liveTransformsRef
     && prev.sourceObject === next.sourceObject
     && prev.sourceObjectVersion === next.sourceObjectVersion
+    && prev.extraSourcesKey === next.extraSourcesKey
     && prev.skipSourceZBounds === next.skipSourceZBounds
     && prev.y === next.y
     && prev.otherClipY === next.otherClipY
