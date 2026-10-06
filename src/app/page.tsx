@@ -7647,7 +7647,7 @@ export default function Home() {
   );
   usePrepareTransformHotkeys({
     appMode: scene.mode,
-    hasModels: scene.models.length > 0,
+    hasModels: scene.interactiveModels.length > 0,
     transformMode: transformMgr.transformMode,
     setTransformMode: setTransformModeWithMirrorFinalize,
     setLocalTransformSpace: setLocalTransformSpace,
@@ -8065,7 +8065,15 @@ export default function Home() {
     };
   }, [nativePickerPreparationState, scene.importProgress, scene.pluginImportPhase, _]);
 
-  const showInlineEmptyLoading = scene.models.length === 0 && (importOverlayState.active || pendingStartupSceneHandoff);
+  /**
+   * "Is anything loaded at all?" — scene-wide, so it has to count every plate's
+   * models. `scene.models` is the active plate, which goes empty the moment you
+   * drag its last model off onto the staging area; testing that would offer to
+   * import a scene that is already open.
+   */
+  const isSceneEmpty = scene.allModels.length === 0;
+
+  const showInlineEmptyLoading = isSceneEmpty && (importOverlayState.active || pendingStartupSceneHandoff);
   const [holdEmptyStateSceneImportUi, setHoldEmptyStateSceneImportUi] = React.useState(false);
 
   React.useEffect(() => {
@@ -8074,7 +8082,7 @@ export default function Home() {
         && (scene.importProgress.type === 'scene' || scene.importProgress.type === 'mesh'))
       || scene.pluginImportPhase === 'processing';
 
-    if (isSceneImportActive && scene.models.length === 0) {
+    if (isSceneImportActive && isSceneEmpty) {
       setHoldEmptyStateSceneImportUi(true);
       return;
     }
@@ -8082,12 +8090,12 @@ export default function Home() {
     if (!isSceneImportActive && holdEmptyStateSceneImportUi) {
       setHoldEmptyStateSceneImportUi(false);
     }
-  }, [holdEmptyStateSceneImportUi, scene.importProgress.active, scene.importProgress.type, scene.pluginImportPhase, scene.models.length]);
+  }, [holdEmptyStateSceneImportUi, isSceneEmpty, scene.importProgress.active, scene.importProgress.type, scene.pluginImportPhase]);
 
-  const showEmptyStatePanel = scene.models.length === 0 || holdEmptyStateSceneImportUi;
+  const showEmptyStatePanel = isSceneEmpty || holdEmptyStateSceneImportUi;
   const showEmptyStateLoading = showInlineEmptyLoading || holdEmptyStateSceneImportUi;
-  const showSceneImportOverlay = scene.models.length > 0 && importOverlayState.active && !holdEmptyStateSceneImportUi;
-  const showEmptySceneDialog = scene.models.length === 0;
+  const showSceneImportOverlay = !isSceneEmpty && importOverlayState.active && !holdEmptyStateSceneImportUi;
+  const showEmptySceneDialog = isSceneEmpty;
   const emptyStateLoadingLabel = pendingStartupSceneHandoff
     ? _(msg`Opening scene…`)
     : importOverlayState.label;

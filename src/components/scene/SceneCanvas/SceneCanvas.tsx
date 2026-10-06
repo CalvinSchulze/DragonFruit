@@ -4160,7 +4160,9 @@ export function SceneCanvas({
   const pendingEntryAnimRef = React.useRef<Record<string, { fromZ: number; runId: number; skipBounce: boolean }>>({});
   const isIntroAnimating = cameraIntroRunId > cameraIntroCompletedRunId;
   const isHomeResetAnimating = cameraHomeResetRunId > cameraHomeResetCompletedRunId;
-  const hasModelsOnPlate = models.length > 0;
+  // Staged models count: dragging the active plate's last model off must not
+  // disable the very interaction needed to drag it back.
+  const hasModelsOnPlate = interactiveModels.length > 0;
   const cameraInteractionCycleEnabled = hasModelsOnPlate && !isIntroAnimating && !isHomeResetAnimating;
   const isDropAnimating = Object.keys(entryDropOffsets).length > 0;
   const dynamicDpr: [number, number] = isLinux
