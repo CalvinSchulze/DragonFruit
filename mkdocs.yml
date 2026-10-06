@@ -170,6 +170,7 @@ nav:
           - Island Scan Data Shapes: adr/0039-island-scan-data-shapes.md
           - Linux CEF Runs on X11: adr/0040-linux-cef-windowing-x11.md
           - Flatpak Ships No Thumbnailer: adr/0041-flatpak-thumbnailer.md
+          - Plate Coordinate Frames: adr/0042-plate-coordinate-frames.md
           - Organic Cut Surface Redesign: dev/organic-cut-surface-redesign.md
       - Integration and Operations:
           - RTSP Relay: dev/rtsp-relay.md

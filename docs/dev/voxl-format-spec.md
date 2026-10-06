@@ -287,6 +287,9 @@ plate — imported outside every plate's footprint, or moved clear of them. It i
 rendered and keeps its supports, but is never sliced or mesh-exported: those follow the active
 plate, and it is on none. A repack never moves it, since no plate's offset applies.
 
+See [ADR-0042](../adr/0042-plate-coordinate-frames.md) for why this is a sentinel rather than a
+hidden "virtual" plate, and for how Lychee Slicer represents the same state.
+
 The marker is a non-empty, non-uuid string rather than `null` by necessity, not taste. Both
 writers emit `plateId` behind a truthiness guard (`...(plateId ? { plateId } : {})`), so a falsy
 marker would be dropped on save and then repaired onto plate 1 on load — the model would silently
