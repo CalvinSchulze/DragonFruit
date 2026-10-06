@@ -233,6 +233,74 @@ revision, which stays `2.2` or `2.1`.
 Backward compatibility: the field is optional and unknown JSON keys are ignored, so a V2.4 file
 opens in an older V2 reader with no loss beyond the classifier having to run again.
 
+### Build plates (V2.5 semantic revision)
+
+Like V2.1–V2.4 this is a semantic revision only: the binary header major version is **deliberately
+unchanged** (`version` stays `2`, or `3` when identical-geometry dedup also fired). The chunk
+layout is untouched — plates are additive JSON fields inside `SCNE` and `MODL`.
+
+A project owns N build plates; exactly one is active. Only the active plate's models are
+selectable, transformable, sliceable and mesh-exportable, but the `.voxl` persists **every** plate.
+
+`SCNE` gains two optional fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `plates` | `VoxlPlateEntry[]` | Every build plate in the project. |
+| `activePlateId` | `string \| null` | Id of the active plate. |
+
+```jsonc
+{
+  "activeModelId": "model-1",
+  "selectedModelIds": [],
+  "plates": [
+    { "id": "plate-a", "name": "Plate 1", "slotIndex": 0, "offsetMm": { "x": 0,   "y": 0 } },
+    { "id": "plate-b", "name": "Minis",   "slotIndex": 1, "offsetMm": { "x": 170, "y": 0 } }
+  ],
+  "activePlateId": "plate-b"
+}
+```
+
+`MODL` entries gain an optional `plateId` naming the owning plate.
+
+**Geometry is world-space.** A model's `transform.position` already includes its plate's offset —
+plates are a layout property, not a parent transform. A multi-plate file therefore opens in a
+build without plate support as a geometrically *valid* scene whose models are simply spread
+across a wide area, rather than a pile of overlapping models.
+
+**`slotIndex` and `offsetMm`.** Plates occupy a single row along +X, where
+`offsetX = slotIndex * (buildVolumeWidthMm + 20)` and `offsetY = 0`. `slotIndex` is permanent:
+deleting a plate frees its slot and a new plate takes the lowest free one, so plates are never
+repacked by ordinary editing. `offsetMm` is stored redundantly on purpose — it records the offset
+that was **in effect when the member transforms were written**. On load, a reader compares it
+against the offset derived from its own build volume; a mismatch means the file was saved under a
+different printer profile, and the member models and their supports are translated by the delta
+(`repackPlates`, `src/features/scene/plates/repackPlates.ts`). Readers must therefore **not**
+recompute `offsetMm` on read — doing so destroys exactly the signal that comparison needs.
+
+**Supports carry no plate.** A support's plate is implied by its model via the `modelId` every
+support primitive already has. `plateId` must never be written onto a support; it would drift.
+
+Legacy rule — **one implicit plate**. `plates` is absent in every file written before this
+revision. Readers (`parseVoxlBinaryV2`, `parseVoxlDocument`) normalise on load via
+`src/features/scene/voxl/plateNormalisation.ts`, guaranteeing four invariants to everything
+downstream:
+
+- at least one plate exists — when `plates` is absent or empty, one is synthesised at
+  `slotIndex: 0` with `offsetMm: {x: 0, y: 0}`;
+- `activePlateId` resolves to an existing plate, falling back to the first;
+- every model's `plateId` resolves to an existing plate — a missing or dangling id is reassigned
+  to the first plate, so **a file never loads with orphaned models**;
+- `slotIndex` is unique, and a non-finite `slotIndex` or offset component is repaired.
+
+Writers omit both fields entirely when the caller supplies no plate state, so a project that never
+saw plates serializes to exactly the bytes it did before. Backward compatibility is therefore
+two-way: an older reader ignores the unknown keys and sees a normal scene, and a newer reader
+opens an older file as a single-plate project.
+
+Scoped exports (the export panel's per-model and subset writes) deliberately pass no plates: an
+exported subset is a one-plate document, not a copy of the project's layout.
+
 ## Supports and extensions
 
 Supports payloads are DragonFruitImportFormat-compatible. Common arrays include:

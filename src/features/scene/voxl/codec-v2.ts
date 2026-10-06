@@ -38,6 +38,7 @@ import {
   type VoxlCompressedDocumentEnvelopeV1,
   type PrecompressedChunk,
 } from './types';
+import { generateVoxlPlateId, normaliseVoxlPlates, reassignOrphanedModelPlates } from './plateNormalisation';
 import type { DragonfruitImportFormat } from '@/supports/types';
 import type { ModelMeshModifiers } from '@/features/mesh-modifiers/types';
 import { base64ToBytes, bytesToBase64 } from '@/utils/base64';
@@ -413,6 +414,16 @@ async function prepareVoxlDocumentV2(
   const scene: VoxlSceneState = {
     activeModelId: input.activeModelId,
     selectedModelIds: [...input.selectedModelIds],
+    // Additive SCNE fields (no container-version bump — see the MODL comment
+    // below for the convention). Omitted entirely when the caller passes no
+    // plate state, so a project that never saw plates serializes to exactly
+    // the bytes it did before.
+    ...(input.plates && input.plates.length > 0
+      ? {
+        plates: input.plates.map((plate) => ({ ...plate, offsetMm: { ...plate.offsetMm } })),
+        activePlateId: input.activePlateId ?? input.plates[0].id,
+      }
+      : {}),
   };
 
   // ── Identical-geometry MESH chunk dedup ───────────────────────────────
@@ -582,6 +593,7 @@ async function prepareVoxlDocumentV2(
       // Written only when true (Ph0.1 D2): a scene with nothing stale must
       // serialize to exactly the bytes it did before the flag existed.
       ...(m.geometryStale === true ? { geometryStale: true } : {}),
+      ...(m.plateId ? { plateId: m.plateId } : {}),
       transform: {
         position: { x: m.transform.position.x, y: m.transform.position.y, z: m.transform.position.z },
         rotation: { x: m.transform.rotation.x, y: m.transform.rotation.y, z: m.transform.rotation.z },
@@ -1079,7 +1091,15 @@ export function parseVoxlBinaryV2(data: Uint8Array): ParsedVoxlResult {
   if (!meta) throw new Error('VOXL V2: missing META chunk.');
 
   const scene = readJsonChunk<VoxlSceneState>(CHUNK_SCNE) ?? { activeModelId: null, selectedModelIds: [] };
-  const models = readJsonChunk<VoxlModelEntry[]>(CHUNK_MODL) ?? [];
+  const rawModels = readJsonChunk<VoxlModelEntry[]>(CHUNK_MODL) ?? [];
+
+  // Plates are additive, so files written before they existed have none.
+  // Synthesise one and seat every model on it, so no consumer downstream ever
+  // sees a model whose plate cannot be resolved.
+  const normalisedPlates = normaliseVoxlPlates(scene, generateVoxlPlateId);
+  scene.plates = normalisedPlates.plates;
+  scene.activePlateId = normalisedPlates.activePlateId;
+  const models = reassignOrphanedModelPlates(rawModels, normalisedPlates.plates);
   const supports = readJsonChunk<DragonfruitImportFormat>(CHUNK_SUPP);
   if (!supports) throw new Error('VOXL V2: missing SUPP chunk.');
 

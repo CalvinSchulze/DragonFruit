@@ -5,7 +5,7 @@ import type { ModelMeshModifiers } from '@/features/mesh-modifiers/types';
 import type { MeshHealthReport } from '@/utils/meshRepair';
 import { resolveModelMeshModifiers } from '@/features/mesh-modifiers/meshModifierStore';
 import { KNOWN_SOURCE_EXTENSION_STRIP_RE } from '@/features/plugins/pluginFileTypeExtensions';
-import { buildSupportExportFromStores, serializeVoxlDocumentV2, serializeVoxlDocumentV2Streaming, VoxlSizeLimitError, VoxlUnchangedError, type PrecompressedChunk, type VoxlChunkCache, type VoxlChunkReportEntry } from '@/features/scene/voxl';
+import { buildSupportExportFromStores, serializeVoxlDocumentV2, serializeVoxlDocumentV2Streaming, VoxlSizeLimitError, VoxlUnchangedError, type PrecompressedChunk, type VoxlChunkCache, type VoxlChunkReportEntry, type VoxlPlateEntry } from '@/features/scene/voxl';
 import { type BakedChunk, meshChunkStore } from '@/features/scene/voxl/meshChunkStore';
 import { buildScopedSupportExportDocument, buildScopedSupportGeometryGroup } from '@/features/export/logic/supportExportReconstruction';
 import { allocateMeshStagePath, exportMeshFile, pickSavePathWithNativeDialog, writeChunkedToNativePath, writeFileAtomicToNativePath, writeFileAtomicStreamedToNativePath } from '@/features/slicing/tauri/nativeSlicerBridge';
@@ -33,9 +33,21 @@ export interface ExportOptions {
 }
 
 export interface ExportSceneContext {
+  /**
+   * Models to export. For `.voxl` this must be `scene.allModels` — the project
+   * file persists every plate. Mesh exports (STL/3MF) and slicing pass only the
+   * active plate's models, matching what the user sees selected and sliced.
+   */
   models: LoadedModel[];
   activeModelId: string | null;
   selectedModelIds: string[];
+  /**
+   * All build plates. Only `.voxl` consumes these; omitted by callers that
+   * export a mesh. When absent the writer emits no plate fields at all, so the
+   * bytes match a pre-plates file exactly.
+   */
+  plates?: VoxlPlateEntry[];
+  activePlateId?: string | null;
   exportThumbnailPng?: Uint8Array | null;
 }
 
@@ -1282,6 +1294,7 @@ export class ExportManager {
               // committed bake, not the geometry currently on screen, because a
               // mutation was still baking when the bounded wait expired.
               ...(staleModelIds.has(model.id) ? { geometryStale: true as const } : {}),
+              ...(model.plateId ? { plateId: model.plateId } : {}),
               transform: {
                 position: {
                   x: model.transform.position.x,
@@ -1339,6 +1352,10 @@ export class ExportManager {
       models,
       activeModelId: sceneContext?.activeModelId ?? null,
       selectedModelIds: sceneContext?.selectedModelIds ?? [],
+      // Consumed by both serializeVoxlDocumentV2 and the streaming variant —
+      // they share this input, so plates cannot go missing on one path only.
+      plates: sceneContext?.plates,
+      activePlateId: sceneContext?.activePlateId ?? null,
       supports,
       meta: {
         generator: 'DragonFruit',

@@ -964,9 +964,12 @@ export default function Home() {
   );
 
   const { isAutosaving, clearAutosave, flushAutosave } = useSceneAutosave({
-    models: scene.models,
+    // Autosave must not silently drop inactive plates.
+    models: scene.allModels,
     activeModelId: scene.activeModelId,
     selectedModelIds: scene.selectedModelIds,
+    plates: scene.plates,
+    activePlateId: scene.activePlateId,
     enabled: sceneAutosaveEnabled,
     debounceMs: sceneAutosaveSettings.debounceMs,
     cooldownMs: sceneAutosaveSettings.cooldownMs,
@@ -4203,8 +4206,10 @@ export default function Home() {
     // Captured before the save so a Save As can clean up the sidecar beside the
     // project the user just moved away from.
     const previousScenePath = activeSceneFilePath;
-    const visibleModels = scene.models.filter((model) => model.visible);
-    const scopeModels = visibleModels.length > 0 ? visibleModels : scene.models;
+    // The project file persists every plate, so the save scope is allModels —
+    // not scene.models, which is the active plate only.
+    const visibleModels = scene.allModels.filter((model) => model.visible);
+    const scopeModels = visibleModels.length > 0 ? visibleModels : scene.allModels;
     const resolvedNativePath = options?.nativePathOverride !== undefined
       ? options.nativePathOverride
       : activeSceneFilePath;
@@ -4244,6 +4249,8 @@ export default function Home() {
         models: scopeModels,
         activeModelId: scene.activeModelId,
         selectedModelIds: scene.selectedModelIds,
+        plates: scene.plates,
+        activePlateId: scene.activePlateId,
         exportThumbnailPng: exportThumbnailPng ?? undefined,
       },
       {

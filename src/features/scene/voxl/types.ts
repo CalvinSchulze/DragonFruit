@@ -82,6 +82,13 @@ export type VoxlModelEntry = {
    * written as `false` — so an ordinary scene's bytes are unchanged.
    */
   geometryStale?: boolean;
+  /**
+   * Owning build plate (see `VoxlSceneState.plates`). Optional: files written
+   * before plates existed have no `plateId`, and the reader assigns every such
+   * model to the single synthesised plate.
+   */
+  plateId?: string;
+  /** World-space transform; already includes the owning plate's offset. */
   transform: VoxlModelTransform;
   mesh: VoxlMeshRef;
   meshModifiers?: ModelMeshModifiers;
@@ -105,9 +112,35 @@ export type VoxlMeta = {
   coordinateSystem: VoxlCoordinateSystem;
 };
 
+/**
+ * A build plate as persisted in the SCNE chunk. Mirrors the runtime `Plate`
+ * (`src/features/scene/plates/types.ts`) — kept as a separate type so the file
+ * format does not move whenever the runtime type does.
+ */
+export type VoxlPlateEntry = {
+  id: string;
+  name: string;
+  /** Permanent lattice slot; the plate's offset is derived from it. */
+  slotIndex: number;
+  /**
+   * The offset that was in effect when the member model transforms were
+   * written. A mismatch against the offset derived from the *reading*
+   * machine's build volume means the file needs a repack on load.
+   */
+  offsetMm: { x: number; y: number };
+};
+
 export type VoxlSceneState = {
   activeModelId: string | null;
   selectedModelIds: string[];
+  /**
+   * Build plates. Absent in files written before plates existed; the reader
+   * synthesises a single plate at slot 0 in that case, so downstream code can
+   * assume at least one plate always exists.
+   */
+  plates?: VoxlPlateEntry[];
+  /** Id of the active plate. Absent or unresolvable → the first plate. */
+  activePlateId?: string | null;
 };
 
 export type VoxlDocumentV1 = {
@@ -150,6 +183,8 @@ export type VoxlModelRuntimeLike = {
   originalRef?: VoxlMeshRef;
   /** See `VoxlModelEntry.geometryStale` (Ph0.1 sub-phase D2). */
   geometryStale?: boolean;
+  /** See `VoxlModelEntry.plateId`. */
+  plateId?: string;
   transform: {
     position: { x: number; y: number; z: number };
     rotation: { x: number; y: number; z: number };
@@ -167,6 +202,9 @@ export type BuildVoxlDocumentInput = {
   models: VoxlModelRuntimeLike[];
   activeModelId: string | null;
   selectedModelIds: string[];
+  /** All plates in the project, not just the active one. */
+  plates?: VoxlPlateEntry[];
+  activePlateId?: string | null;
   supports: DragonfruitImportFormat;
   meta?: Partial<Pick<VoxlMeta, 'generator' | 'generatorVersion'>>;
   extensions?: Record<string, unknown>;

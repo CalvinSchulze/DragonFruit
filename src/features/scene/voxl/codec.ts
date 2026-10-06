@@ -13,6 +13,7 @@ import {
   type VoxlVec3,
 } from './types';
 import { isVoxlBinaryV2, parseVoxlBinaryV2 } from './codec-v2';
+import { generateVoxlPlateId, normaliseVoxlPlates, reassignOrphanedModelPlates } from './plateNormalisation';
 import { migrateLegacySupportPayload } from '@/supports/importMigrations';
 import { importPayloadCollections } from '@/supports/supportCollections';
 
@@ -200,6 +201,7 @@ function mapModelToVoxl(model: VoxlModelRuntimeLike): VoxlModelEntry {
     ...(model.sourcePath ? { sourcePath: model.sourcePath } : {}),
     ...(model.nativePreview ? { nativePreview: model.nativePreview } : {}),
     ...(model.originalRef ? { originalRef: model.originalRef } : {}),
+    ...(model.plateId ? { plateId: model.plateId } : {}),
     transform: {
       position: toVec3(model.transform.position),
       rotation: toVec3(model.transform.rotation),
@@ -270,6 +272,14 @@ export function buildVoxlDocumentV1(input: BuildVoxlDocumentInput): VoxlDocument
     scene: {
       activeModelId: input.activeModelId,
       selectedModelIds: [...input.selectedModelIds],
+      // Additive SCNE fields: omitted entirely when the caller has no plate
+      // state, so a single-plate project's bytes are unchanged.
+      ...(input.plates && input.plates.length > 0
+        ? {
+          plates: input.plates.map((plate) => ({ ...plate, offsetMm: { ...plate.offsetMm } })),
+          activePlateId: input.activePlateId ?? input.plates[0].id,
+        }
+        : {}),
     },
     models,
     supports: input.supports,
@@ -389,6 +399,13 @@ export function parseVoxlDocument(json: string): VoxlDocumentV1 {
       }
     }
   }
+
+  // Plates are additive, so a legacy document has none. Synthesise one and
+  // seat every model on it, so no consumer ever sees an orphaned model.
+  const normalisedPlates = normaliseVoxlPlates(parsed.scene, () => generateVoxlPlateId());
+  parsed.scene.plates = normalisedPlates.plates;
+  parsed.scene.activePlateId = normalisedPlates.activePlateId;
+  parsed.models = reassignOrphanedModelPlates(parsed.models as VoxlModelEntry[], normalisedPlates.plates);
 
   return parsed as VoxlDocumentV1;
 }

@@ -82,7 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
-import { createPlate, MAX_PLATES, resolveModelPlateId, type Plate } from '@/features/scene/plates';
+import { createPlate, MAX_PLATES, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -307,8 +307,10 @@ function schedulePostPaint(callback: () => void): void {
 // from its module-level singleton. Callers that have already computed a *next*
 // plate state pass `platesOverride` / `activePlateIdOverride` instead —
 // mirroring how `supportStateOverride` handles the same staleness.
-const plateStateRef: { current: { plates: Plate[]; activePlateId: string | null } } = {
-  current: { plates: [], activePlateId: null },
+const plateStateRef: {
+  current: { plates: Plate[]; activePlateId: string | null; buildVolume: PlateBuildVolume };
+} = {
+  current: { plates: [], activePlateId: null, buildVolume: { widthMm: 0, depthMm: 0 } },
 };
 
 /**
@@ -1687,6 +1689,7 @@ export function useSceneCollectionManager() {
   const [activePlateId, setActivePlateId] = useState<string>(() => plates[0].id);
   plateStateRef.current.plates = plates;
   plateStateRef.current.activePlateId = activePlateId;
+  plateStateRef.current.buildVolume = { widthMm: view3dSettings.widthMm, depthMm: view3dSettings.depthMm };
 
   const activePlateModels = useMemo(
     () => models.filter((model) => resolveModelPlateId(model, activePlateId) === activePlateId),
@@ -5250,6 +5253,40 @@ export function useSceneCollectionManager() {
       const importedModels: LoadedModel[] = [];
       let skippedModels = 0;
 
+      // ── Plates ──────────────────────────────────────────────────────────
+      //
+      // A .voxl carries the whole project's plate set. Opening into an empty
+      // scene adopts it wholesale (ids included — there is nothing to collide
+      // with). Merging into a populated scene would need plate unioning and
+      // offset reconciliation that v1 deliberately does not do, so merged
+      // models fall through to the reducer and land on the active plate.
+      //
+      // The reader guarantees at least one plate and no orphaned models, so
+      // `filePlates` is only empty when the document came from somewhere that
+      // bypassed the reader.
+      const openingIntoEmptyScene = modelsRef.current.length === 0;
+      const filePlates = document.scene.plates ?? [];
+      const adoptedPlates: Plate[] | null = openingIntoEmptyScene && filePlates.length > 0
+        ? filePlates.map((plate) => ({
+          id: plate.id,
+          name: plate.name,
+          slotIndex: plate.slotIndex,
+          offsetMm: { ...plate.offsetMm },
+        }))
+        : null;
+
+      if (adoptedPlates) {
+        const adoptedActivePlateId = typeof document.scene.activePlateId === 'string'
+          && adoptedPlates.some((plate) => plate.id === document.scene.activePlateId)
+          ? document.scene.activePlateId
+          : adoptedPlates[0].id;
+
+        plateStateRef.current.plates = adoptedPlates;
+        plateStateRef.current.activePlateId = adoptedActivePlateId;
+        setPlates(adoptedPlates);
+        setActivePlateId(adoptedActivePlateId);
+      }
+
       // Identical-geometry dedup: a scene with N copies of one mesh (e.g. a
       // Fill-Plate bed) stores N identical payloads, and decode + SHA-256 +
       // native repair per copy dominates load time. Build each UNIQUE mesh
@@ -5453,6 +5490,9 @@ export function useSceneCollectionManager() {
             manualZMoveOverride: true,
             isSupportGeometry: model.isSupportGeometry,
             linkGroupId: model.linkGroupId,
+            // Only meaningful when plates were adopted; otherwise the reducer
+            // stamps the active plate.
+            ...(adoptedPlates && model.plateId ? { plateId: model.plateId } : {}),
           });
 
           // Store meshModifiers externally so model objects stay lightweight
@@ -5531,6 +5571,34 @@ export function useSceneCollectionManager() {
           if (!sourceTransform) continue;
           if (transformsEqual(sourceTransform, imported.transform)) continue;
           transformSupportsForModel(imported.id, sourceTransform, imported.transform);
+        }
+      }
+
+      // A file saved against a different build volume puts every plate from
+      // slot 1 onwards in the wrong place. Repack now that both the models and
+      // their supports are installed (D6). Not undoable: this is a consistency
+      // migration, not a user edit.
+      if (adoptedPlates) {
+        const buildVolume = plateStateRef.current.buildVolume;
+        if (platesNeedRepack(adoptedPlates, buildVolume)) {
+          const activeId = plateStateRef.current.activePlateId ?? adoptedPlates[0].id;
+          const repacked = repackPlates(adoptedPlates, importedModels, buildVolume, activeId);
+
+          if (repacked.movedModelCount > 0) {
+            const transformsById = new Map(repacked.models.map((model) => [model.id, model.transform]));
+            setModels((prev) => prev.map((model) => {
+              const nextTransform = transformsById.get(model.id);
+              return nextTransform ? { ...model, transform: nextTransform } : model;
+            }));
+          }
+
+          plateStateRef.current.plates = repacked.plates;
+          setPlates(repacked.plates);
+
+          console.info(
+            `[SceneCollection] Repacked ${repacked.movedPlateIds.length} plate(s) for the current build volume; `
+            + `moved ${repacked.movedModelCount} model(s).`,
+          );
         }
       }
 

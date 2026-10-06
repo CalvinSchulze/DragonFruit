@@ -5,6 +5,7 @@ import { subscribeHistory } from '@/history/historyStore';
 import { ExportManager } from '@/features/export/logic/ExportManager';
 import { VoxlChunkCache } from '@/features/scene/voxl';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
+import type { VoxlPlateEntry } from '@/features/scene/voxl';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -337,7 +338,10 @@ function isDesktopRuntime(): boolean {
 // ---------------------------------------------------------------------------
 
 export type UseSceneAutosaveOptions = {
+  /** Every plate's models — autosave persists the whole project. */
   models: LoadedModel[];
+  plates?: VoxlPlateEntry[];
+  activePlateId?: string | null;
   activeModelId: string | null;
   selectedModelIds: string[];
   enabled?: boolean;
@@ -378,6 +382,8 @@ export const SCENE_AUTOSAVE_FAILED_EVENT = 'scene-autosave-failed';
 
 export function useSceneAutosave({
   models,
+  plates,
+  activePlateId,
   activeModelId,
   selectedModelIds,
   enabled = true,
@@ -396,6 +402,10 @@ export function useSceneAutosave({
   // Keep stable refs so the debounce callback always sees fresh values
   const modelsRef = React.useRef(models);
   modelsRef.current = models;
+  const platesRef = React.useRef(plates);
+  platesRef.current = plates;
+  const activePlateIdRef = React.useRef(activePlateId);
+  activePlateIdRef.current = activePlateId;
   const activeModelIdRef = React.useRef(activeModelId);
   activeModelIdRef.current = activeModelId;
   const selectedModelIdsRef = React.useRef(selectedModelIds);
@@ -566,6 +576,8 @@ export function useSceneAutosave({
               models: currentModels,
               activeModelId: activeModelIdRef.current,
               selectedModelIds: selectedModelIdsRef.current,
+              plates: platesRef.current,
+              activePlateId: activePlateIdRef.current ?? null,
             },
             {
               nativePath: voxlPath,

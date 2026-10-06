@@ -15,3 +15,4 @@ export {
   resolveModelPlateId,
   platesNeedRepack,
 } from './plateLayout';
+export { repackPlates, type RepackableModel, type RepackPlatesResult } from './repackPlates';

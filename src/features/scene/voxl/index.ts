@@ -1,4 +1,5 @@
 export * from './types';
+export * from './plateNormalisation';
 export * from './codec';
 export * from './codec-v2';
 export * from './meshChunkStore';
