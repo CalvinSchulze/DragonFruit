@@ -28,7 +28,8 @@ export function resolveModelActionTargetIds({
 
 export function dispatchDeleteModelAction(
   targets: ModelActionTargetInput,
-  deleteModels: (ids: string[]) => void | Promise<void>,
+  /** Fire-and-forget: any return value is ignored. */
+  deleteModels: (ids: string[]) => unknown,
 ): boolean {
   const targetIds = resolveModelActionTargetIds(targets);
   if (targetIds.length === 0) return false;

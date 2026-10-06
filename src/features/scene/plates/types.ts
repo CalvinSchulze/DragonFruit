@@ -24,11 +24,17 @@ export const PLATE_GAP_MM = 20;
 export const DEFAULT_PLATE_NAME = 'Plate 1';
 
 /**
- * Hard cap on plate count. The data model is already N-plate capable; nothing
- * yet creates a second plate, so this stays at 1 until the plate operations and
- * UI land. Raising it is the switch that turns the feature on.
+ * Hard cap on plate count, enforced by `addPlateToSet` and asserted by the
+ * scene hook's dev-only invariants.
+ *
+ * The data model is N-plate capable, so the cap is a usability limit rather
+ * than a structural one: plates occupy a single row along +X, so 16 of them on
+ * a 220 mm printer already span ~3.8 m of world space, which is about as far as
+ * the camera framing stays useful. A file that somehow carries more plates is
+ * still read in full — the reader never drops plates — so the cap only bounds
+ * what this app creates.
  */
-export const MAX_PLATES = 1;
+export const MAX_PLATES = 16;
 
 /** Offset of a plate's origin from the world origin, in millimetres. */
 export type PlateOffsetMm = {

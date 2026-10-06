@@ -21,6 +21,19 @@ export {
   platesNeedRepack,
   selectInteractiveModels,
 } from './plateLayout';
+export {
+  addPlateToSet,
+  canAddPlate,
+  countModelsByPlate,
+  duplicatePlateName,
+  plateOffsetDelta,
+  removePlateFromSet,
+  renamePlateInSet,
+  sortPlatesBySlot,
+  type AddPlateResult,
+  type PlateModelCounts,
+  type RemovePlateResult,
+} from './plateOperations';
 export { repackPlates, type RepackableModel, type RepackPlatesResult } from './repackPlates';
 export {
   assignModelPlates,

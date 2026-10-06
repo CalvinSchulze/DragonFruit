@@ -9,7 +9,8 @@ export function selectModelsForClipboard<T extends { id: string }>(
 export function performModelCut(
   ids: string[],
   copySelectedModels: (targetIds: string[]) => boolean,
-  deleteModels: (targetIds: string[]) => void | Promise<void>,
+  /** Fire-and-forget: any return value is ignored. */
+  deleteModels: (targetIds: string[]) => unknown,
 ): boolean {
   if (!copySelectedModels(ids)) return false;
 

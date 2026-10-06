@@ -79,7 +79,7 @@ msgstr "{done}/{total} procesados"
 msgid "{downloaded} / {total} ({pct}%)"
 msgstr "{downloaded} / {total} ({pct} %)"
 
-#: src/app/page.tsx:482
+#: src/app/page.tsx:483
 #: src/components/controls/ModelStatsCard.tsx:209
 msgid "{hours} h {minutes} min"
 msgstr "{hours} h {minutes} min"
@@ -109,8 +109,8 @@ msgstr "{materialName} ({sourceName})"
 msgid "{minutes} min"
 msgstr "{minutes} min"
 
-#: src/app/page.tsx:474
-#: src/app/page.tsx:483
+#: src/app/page.tsx:475
+#: src/app/page.tsx:484
 #: src/components/controls/ModelStatsCard.tsx:210
 msgid "{minutes} min {seconds} s"
 msgstr "{minutes} min {seconds} s"
@@ -126,6 +126,10 @@ msgstr "{pixels} px de desenfoque de borde"
 #: src/features/slicing/components/SlicingPanel.tsx:135
 msgid "{pixels}px XY · {layers}L Z"
 msgstr "{pixels} px en XY · {layers} capas en Z"
+
+#: src/components/layout/plateTabMessages.ts:22
+msgid "{plateName} — {modelCount, plural, one {# model} other {# models}}"
+msgstr "{plateName} — {modelCount, plural, one {# modelo} other {# modelos}}"
 
 #: src/features/slicing/components/SlicingPanel.tsx:219
 msgid "{rate} layers/s"
@@ -168,12 +172,12 @@ msgid "<0>{modelName}</0> was imported as an STL file. Our analysis could not de
 msgstr "<0>{modelName}</0> se importó como archivo STL. Nuestro análisis no ha podido determinar si este modelo lleva geometría de soporte integrada en la malla."
 
 #. Approximate estimated print time (the "~" marks it as a rough estimate). {hours}/{mins} are whole-number quantities.
-#: src/app/page.tsx:466
+#: src/app/page.tsx:467
 msgid "~{hours} h {mins} min"
 msgstr "~{hours} h {mins} min"
 
 #. Approximate estimated print time under an hour (the "~" marks it as a rough estimate).
-#: src/app/page.tsx:467
+#: src/app/page.tsx:468
 msgid "~{mins} min"
 msgstr "~{mins} min"
 
@@ -200,6 +204,10 @@ msgstr "El nombre de un preajuste integrado se traduce y no se puede cambiar"
 #: src/components/controls/autoSupport/autoSupportPanelTabs.ts:146
 msgid "A candidate within this 3D distance of an existing support merges into it instead of starting a new trunk"
 msgstr "Un candidato que esté a esta distancia 3D de un soporte existente se fusiona con él en vez de arrancar un tronco nuevo"
+
+#: src/components/layout/PlateTabStrip.tsx:240
+msgid "A project always keeps at least one plate"
+msgstr "Un proyecto siempre conserva al menos una placa"
 
 #. <name> is a literal placeholder in the filename, not markup — leave it as-is.
 #: src/components/settings/SceneAutosaveSettingsTab.tsx:407
@@ -258,13 +266,18 @@ msgstr "Añade otro bucle y empieza a dibujarlo. Al cortar se cortan todos los b
 msgid "Add contacts along the edge or corner a pose bears on, so a leaning part is held against toppling and peel (default on)"
 msgstr "Añade contactos a lo largo del borde o la esquina en que se apoya la pose, para que una pieza inclinada no vuelque ni se despegue (activado por defecto)"
 
-#: src/app/page.tsx:2262
+#: src/app/page.tsx:2263
 msgid "Add joint"
 msgstr "Añadir unión"
 
 #: src/components/layout/EmptySceneState.tsx:565
 msgid "Add or switch printer anytime from the top bar."
 msgstr "Añade o cambia de impresora en cualquier momento desde la barra superior."
+
+#: src/components/layout/PlateTabStrip.tsx:176
+#: src/components/layout/PlateTabStrip.tsx:177
+msgid "Add plate"
+msgstr "Añadir placa"
 
 #: src/components/layout/EmptySceneState.tsx:537
 #: src/components/layout/OnboardingPrinterLibrary.tsx:413
@@ -508,7 +521,7 @@ msgstr "Los archivos de guardado automático solo existen en la versión de escr
 msgid "Autosave idle delay"
 msgstr "Espera antes de guardar"
 
-#: src/app/page.tsx:1034
+#: src/app/page.tsx:1035
 msgid "Autosave is not working"
 msgstr "El guardado automático no funciona"
 
@@ -539,7 +552,7 @@ msgstr "Área media de isla"
 #. View cube face (the side opposite Front), rendered uppercase inside a small 3D cube. Keep it as short as possible.
 #: src/components/layout/FirstRunOnboarding.tsx:273
 #: src/components/layout/OnboardingPrinterLibrary.tsx:279
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1676
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1712
 msgid "Back"
 msgstr "Atrás"
 
@@ -661,7 +674,7 @@ msgid "Border Margin"
 msgstr "Margen del borde"
 
 #. View cube face (seen from below), rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1680
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1716
 msgid "Bottom"
 msgstr "Abajo"
 
@@ -702,6 +715,10 @@ msgstr "Crear y ajustar soportes"
 #: src/volumeAnalysis/IslandVolumes/components/IslandVolumesHierarchyCard.tsx:901
 msgid "Build Hierarchy"
 msgstr "Construir jerarquía"
+
+#: src/components/layout/PlateTabStrip.tsx:110
+msgid "Build plates"
+msgstr "Placas de impresión"
 
 #. placeholder {0}: selectedProfilesPrinter.buildVolumeMm?.width ?? '-'
 #. placeholder {1}: selectedProfilesPrinter.buildVolumeMm?.depth ?? '-'
@@ -1183,7 +1200,7 @@ msgstr "Contorno"
 msgid "Contoured regions"
 msgstr "Regiones contorneadas"
 
-#: src/app/page.tsx:8055
+#: src/app/page.tsx:8056
 msgid "Converting support data and model metadata"
 msgstr "Convirtiendo los datos de soportes y los metadatos del modelo"
 
@@ -1422,6 +1439,10 @@ msgstr "¿Eliminar {count} preajustes?"
 msgid "Delete Backup Snapshot"
 msgstr "Eliminar la instantánea"
 
+#: src/components/layout/PlateTabStrip.tsx:247
+msgid "Delete plate"
+msgstr "Eliminar placa"
+
 #: src/components/controls/autoSupport/AutoSupportPresets.tsx:659
 #: src/supports/Settings/components/PresetSelector.tsx:776
 msgid "Delete preset"
@@ -1644,13 +1665,17 @@ msgstr "DragonFruit va a <0>descargar, verificar e instalar</0> la actualizació
 msgid "Drop supported files"
 msgstr "Suelta archivos compatibles"
 
-#: src/app/page.tsx:10073
+#: src/app/page.tsx:10082
 msgid "Drop supported files to import"
 msgstr "Suelta aquí los ficheros compatibles para importarlos"
 
 #: src/components/controls/autoSupport/AutoSupportPresets.tsx:403
 msgid "Duplicate"
 msgstr "Duplicar"
+
+#: src/components/layout/PlateTabStrip.tsx:230
+msgid "Duplicate plate"
+msgstr "Duplicar placa"
 
 #: src/components/settings/SettingsModal.tsx:1219
 msgid "Early-access and experimental features"
@@ -1680,7 +1705,7 @@ msgstr "Editar el perfil de material"
 msgid "Edit printer profile"
 msgstr "Editar el perfil de impresora"
 
-#: src/app/page.tsx:2268
+#: src/app/page.tsx:2269
 #: src/components/ui/EditorContextMenu.tsx:126
 msgid "Editor"
 msgstr "Editor"
@@ -2040,7 +2065,7 @@ msgid "From the community, for the community. Free to use, open to contribute, a
 msgstr "De la comunidad y para la comunidad. Libre de usar, abierto a contribuciones y moldeado por quienes imprimen con él."
 
 #. Orientation label, rendered uppercase on the view cube and on the build plate's front edge. Keep it as short as possible — long words are auto-shrunk to fit and become hard to read.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1672
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1708
 msgid "Front"
 msgstr "Frente"
 
@@ -2489,7 +2514,7 @@ msgid "Last remote backup"
 msgstr "Última copia remota"
 
 #. {timestamp} is a locale-formatted date and time.
-#: src/app/page.tsx:617
+#: src/app/page.tsx:618
 msgid "Last successful autosave: {timestamp}. Save your project manually."
 msgstr "Último guardado automático correcto: {timestamp}. Guarda tu proyecto a mano."
 
@@ -2541,7 +2566,7 @@ msgid "Leave the collection as it is"
 msgstr "Deja la colección como está"
 
 #. View cube face, rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1678
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1714
 msgid "Left"
 msgstr "Izq."
 
@@ -2549,7 +2574,7 @@ msgstr "Izq."
 msgid "Length"
 msgstr "Longitud"
 
-#: src/app/page.tsx:8095
+#: src/app/page.tsx:8104
 msgid "Letting DragonFruit finish its startup animation before loading your scene."
 msgstr "Dejando que DragonFruit termine su animación de arranque antes de cargar la escena."
 
@@ -2625,7 +2650,7 @@ msgstr "Cargando el estado de las copias…"
 msgid "Loading Mesh Files…"
 msgstr "Cargando ficheros de malla…"
 
-#: src/app/page.tsx:8045
+#: src/app/page.tsx:8046
 #: src/features/scene/sceneImportMessages.ts:23
 msgid "Loading Mesh…"
 msgstr "Cargando malla…"
@@ -2634,9 +2659,9 @@ msgstr "Cargando malla…"
 msgid "Loading remote material…"
 msgstr "Cargando el material remoto…"
 
-#: src/app/page.tsx:4314
-#: src/app/page.tsx:8045
-#: src/app/page.tsx:8054
+#: src/app/page.tsx:4315
+#: src/app/page.tsx:8046
+#: src/app/page.tsx:8055
 msgid "Loading Scene…"
 msgstr "Cargando escena…"
 
@@ -3087,7 +3112,7 @@ msgstr "Sin antialiasing"
 msgid "No active printer"
 msgstr "Sin impresora activa"
 
-#: src/app/page.tsx:1038
+#: src/app/page.tsx:1039
 msgid "No autosave has succeeded this session. Save your project manually."
 msgstr "Ningún guardado automático ha funcionado en esta sesión. Guarda tu proyecto a mano."
 
@@ -3238,7 +3263,7 @@ msgstr "Aún sin crear"
 #. Name of the automatic folder collecting models staged in the scene but not placed on any build plate.
 #: src/components/controls/ModelManagerPanel.tsx:238
 msgid "Not on a plate"
-msgstr ""
+msgstr "Sin placa"
 
 #: src/components/settings/LocalBackupsSettingsTab.tsx:741
 msgid "Not selected"
@@ -3416,7 +3441,7 @@ msgstr "Abrir escena…"
 msgid "Opening"
 msgstr "Abriendo"
 
-#: src/app/page.tsx:8092
+#: src/app/page.tsx:8101
 msgid "Opening scene…"
 msgstr "Abriendo escena…"
 
@@ -3531,6 +3556,18 @@ msgstr "Mensaje de colocación."
 #: src/components/scene/scanProgressMessages.ts:27
 msgid "Placing supports"
 msgstr "Colocando soportes"
+
+#: src/components/layout/PlateTabStrip.tsx:198
+msgid "Plate context menu"
+msgstr "Menú contextual de la placa"
+
+#: src/components/layout/plateTabMessages.ts:27
+msgid "Plate limit reached ({maxPlates})"
+msgstr "Límite de placas alcanzado ({maxPlates})"
+
+#: src/components/layout/PlateTabStrip.tsx:124
+msgid "Plate name"
+msgstr "Nombre de la placa"
 
 #: src/features/slicing/components/SlicingPanel.tsx:3743
 msgid "Plate preview · Layer {previewSelectedLayer}/{previewTotalLayers}"
@@ -3761,7 +3798,7 @@ msgstr "Repetir el escaneo por líneas"
 msgid "Re-slice required after profile change"
 msgstr "Es necesario volver a laminar tras cambiar de perfil"
 
-#: src/app/page.tsx:4315
+#: src/app/page.tsx:4316
 msgid "Reading autosaved scene…"
 msgstr "Leyendo la escena guardada automáticamente…"
 
@@ -3902,6 +3939,10 @@ msgstr "Renombrar el modelo"
 msgid "Rename model base name"
 msgstr "Renombrar el nombre base del modelo"
 
+#: src/components/layout/PlateTabStrip.tsx:215
+msgid "Rename plate"
+msgstr "Renombrar placa"
+
 #: src/components/controls/autoSupport/AutoSupportPresets.tsx:461
 msgid "Rename preset"
 msgstr "Renombrar preajuste"
@@ -3999,8 +4040,8 @@ msgstr "Restaurar los valores de fábrica"
 msgid "Restore Factory Defaults?"
 msgstr "¿Restaurar los valores de fábrica?"
 
-#: src/app/page.tsx:4346
-#: src/app/page.tsx:4357
+#: src/app/page.tsx:4347
+#: src/app/page.tsx:4358
 msgid "Restore Failed"
 msgstr "Error al restaurar"
 
@@ -4029,7 +4070,7 @@ msgid "Revert Changes"
 msgstr "Descartar los cambios"
 
 #. View cube face, rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1677
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1713
 msgid "Right"
 msgstr "Dcha."
 
@@ -4363,12 +4404,12 @@ msgid "Selected printer is offline"
 msgstr "La impresora seleccionada está sin conexión"
 
 #. Shown while dragging a selection rectangle right to left, which takes every object the rectangle touches. Mirrors the CAD convention; keep it on one short line.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3149
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3185
 msgid "Selection Mode: Contact (Right to Left)"
 msgstr "Modo de selección: contacto (de derecha a izquierda)"
 
 #. Shown while dragging a selection rectangle left to right, which takes only the objects the rectangle fully encloses. Mirrors the CAD convention; keep it on one short line.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3153
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3189
 msgid "Selection Mode: Enclosed (Left to Right)"
 msgstr "Modo de selección: volumen completo (de izquierda a derecha)"
 
@@ -4780,7 +4821,7 @@ msgstr "El soporte chocaría con la geometría del modelo."
 msgid "Supported: {extensions}"
 msgstr "Compatibles: {extensions}"
 
-#: src/app/page.tsx:2268
+#: src/app/page.tsx:2269
 msgid "Supports"
 msgstr "Soportes"
 
@@ -4870,16 +4911,16 @@ msgstr "Ancho de la espiga en milímetros"
 msgid "Tension"
 msgstr "Tensión"
 
-#: src/app/page.tsx:4359
+#: src/app/page.tsx:4360
 msgid "The autosave recovery file could not be found."
 msgstr "No se encuentra el archivo de recuperación."
 
-#: src/app/page.tsx:4347
-#: src/app/page.tsx:4360
+#: src/app/page.tsx:4348
+#: src/app/page.tsx:4361
 msgid "The autosaved recovery file is corrupted or unreadable."
 msgstr "El archivo de recuperación está dañado o no se puede leer."
 
-#: src/app/page.tsx:1035
+#: src/app/page.tsx:1036
 msgid "The background recovery save failed repeatedly."
 msgstr "El guardado de recuperación en segundo plano ha fallado varias veces seguidas."
 
@@ -4960,7 +5001,7 @@ msgstr "La resina está lista. ¿Y tú?"
 msgid "The saved run policy the settings below are. Selecting one applies it immediately; the rest of the dialog stays staged until you save."
 msgstr "La política de ejecución guardada que corresponde a los ajustes de abajo. Al elegir uno se aplica en el acto; el resto de la ventana queda pendiente hasta que guardes."
 
-#: src/app/page.tsx:4348
+#: src/app/page.tsx:4349
 msgid "The scene importer rejected or could not parse the autosave data."
 msgstr "El importador de escenas rechazó los datos del guardado automático o no pudo interpretarlos."
 
@@ -5084,7 +5125,7 @@ msgstr "Margen de ajuste de la punta"
 msgid "Tip Ø range"
 msgstr "Rango de Ø de la punta"
 
-#: src/app/page.tsx:2257
+#: src/app/page.tsx:2258
 msgid "Toggle curve"
 msgstr "Alternar curva"
 
@@ -5109,7 +5150,7 @@ msgid "Too close to an existing support."
 msgstr "Demasiado cerca de un soporte existente."
 
 #. View cube face (seen from above), rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1679
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1715
 msgid "Top"
 msgstr "Arriba"
 
@@ -5200,7 +5241,7 @@ msgstr "Puedes perder los cambios sin guardar."
 msgid "Unsaved Scene Found"
 msgstr "Hay una escena sin guardar"
 
-#: src/app/page.tsx:10073
+#: src/app/page.tsx:10082
 msgid "Unsupported file format"
 msgstr "Formato de fichero no compatible"
 

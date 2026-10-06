@@ -498,6 +498,7 @@ export function SceneCanvas({
   allModels: allModelsProp,
   plates,
   activePlateId,
+  onActivatePlate,
   activeModelId: activeModelIdProp,
   visualActiveModelId,
   selectedModelIds,
@@ -620,6 +621,12 @@ export function SceneCanvas({
   allModels?: LoadedModel[];
   plates?: ScenePlate[];
   activePlateId?: string | null;
+  /**
+   * Makes the plate under the cursor active. Omitted, inactive plates stay
+   * entirely non-interactive — the viewport grows no click target it has no
+   * way to act on.
+   */
+  onActivatePlate?: (plateId: string) => void;
   cavityGeometryByModelId?: Map<string, THREE.BufferGeometry>;
   onClearSelection?: () => void;
   activeModelId?: string | null;
@@ -1461,6 +1468,42 @@ export function SceneCanvas({
     useStlLoadCameraIntro(models, buildVolumeCenterTarget, { deferIntro: deferCameraIntro });
   const [cameraIntroCompletedRunId, setCameraIntroCompletedRunId] = React.useState(0);
   const [cameraHomeResetCompletedRunId, setCameraHomeResetCompletedRunId] = React.useState(0);
+
+  // A plate switch is a pan, not a reframe: translating the camera and its
+  // orbit target by the offset between the two plates lands the user on the new
+  // plate with their angle and zoom intact.
+  //
+  // `useStlLoadCameraIntro` only re-homes the camera when the plate being left
+  // has no models, so without this a switch between two populated plates would
+  // leave the camera staring at the plate it came from. This also covers a
+  // repack: the models moved with their plate, so the camera has to follow by
+  // the same delta.
+  const previousPlateOffsetRef = React.useRef(activePlateOffsetMm);
+  React.useEffect(() => {
+    const previous = previousPlateOffsetRef.current;
+    previousPlateOffsetRef.current = activePlateOffsetMm;
+
+    const deltaX = activePlateOffsetMm.x - previous.x;
+    const deltaY = activePlateOffsetMm.y - previous.y;
+    if (deltaX === 0 && deltaY === 0) return;
+
+    const camera = cameraRef.current;
+    if (camera) {
+      camera.position.x += deltaX;
+      camera.position.y += deltaY;
+    }
+
+    const controls = orbitControlsRef.current;
+    if (controls) {
+      const nextTarget = controls.target.clone();
+      nextTarget.x += deltaX;
+      nextTarget.y += deltaY;
+      // Instant: the switch itself is instant, and an animated 3.8 m sweep
+      // across the plate row reads as the camera being lost rather than moved.
+      setOrbitTargetFromPoint(nextTarget, { animate: false });
+      controls.update();
+    }
+  }, [activePlateOffsetMm, setOrbitTargetFromPoint]);
 
   const lastHoveredModelPointRef = React.useRef<THREE.Vector3 | null>(null);
   const [hoveredMeshModelId, setHoveredMeshModelId] = React.useState<string | null>(null);
@@ -4508,6 +4551,55 @@ export function SceneCanvas({
     [cameraInteractionCycleEnabled, isMarqueeSelecting, mode],
   );
 
+
+  // ── Click an inactive plate to activate it ───────────────────────────────
+  //
+  // The plate slab itself is not raycastable — every mesh `Helpers` draws uses
+  // `nullRaycast` — so inactive plates get a dedicated invisible hit plane
+  // covering their footprint. Only inactive plates get one: the active plate
+  // has to stay clear for support placement, marquee and the pointer-miss
+  // deselect, and a hit plane over it would absorb all three.
+  //
+  // Gated on a near-stationary press rather than on `suppressNextCanvasClickRef`.
+  // A marquee or lasso that ends over another plate still produces a click, and
+  // the suppression flag is consumed by whichever of `handleCanvasClick` and
+  // `handleScenePointerMissed` runs first — ordering this handler cannot rely
+  // on. Comparing press to release is self-contained and catches the same case.
+  const plateClickOriginRef = React.useRef<{ x: number; y: number } | null>(null);
+  /** Px of travel between press and release still treated as a click, not a drag. */
+  const PLATE_CLICK_SLOP_PX = 5;
+
+  const handlePlatePointerDown = React.useCallback((event: { clientX: number; clientY: number }) => {
+    plateClickOriginRef.current = { x: event.clientX, y: event.clientY };
+  }, []);
+
+  const handlePlateClick = React.useCallback((
+    plateId: string,
+    event: { clientX: number; clientY: number; stopPropagation: () => void },
+  ) => {
+    const origin = plateClickOriginRef.current;
+    plateClickOriginRef.current = null;
+
+    if (!onActivatePlate) return;
+    if (!cameraInteractionCycleEnabled) return;
+    if (isMarqueeSelecting) return;
+    if (isPlacementActive) return;
+    if (orbitInteractionActiveRef.current || spaceMouseNavigationActive) return;
+    if (!origin) return;
+    if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > PLATE_CLICK_SLOP_PX) return;
+
+    // Keep the press off the pointer-miss path, which would clear the selection
+    // the switch is about to rebuild anyway.
+    event.stopPropagation();
+    onActivatePlate(plateId);
+  }, [
+    cameraInteractionCycleEnabled,
+    isMarqueeSelecting,
+    isPlacementActive,
+    onActivatePlate,
+    spaceMouseNavigationActive,
+  ]);
+
   const handleScenePointerMissed = React.useCallback(() => {
     if (!cameraInteractionCycleEnabled) return;
     if (isMarqueeSelecting) return;
@@ -6173,6 +6265,33 @@ export function SceneCanvas({
               frontLabel={frontFaceLabel}
               showPlateLogo={isActive}
             />
+          ))}
+        {/*
+          Hit plane per inactive plate, so clicking one makes it active. Sits at
+          the slab's own footprint and at Z=0, under everything; it is rendered
+          only when `onActivatePlate` is supplied, never for the active plate,
+          and never during a thumbnail capture.
+
+          `transparent opacity={0}` rather than `visible={false}`: three's
+          raycaster skips invisible objects outright, so an invisible mesh is
+          also an unclickable one.
+        */}
+        {onActivatePlate && modelPickerEnabled && !thumbnailCaptureActive && platesWithBounds
+          .filter(({ isActive }) => !isActive)
+          .map(({ plate }) => (
+            <mesh
+              key={`plate-hit-${plate.id}`}
+              position={[
+                (activeBuildVolumeSettings.originMode === 'front_left' ? activeBuildVolumeSettings.widthMm * 0.5 : 0) + plate.offsetMm.x,
+                (activeBuildVolumeSettings.originMode === 'front_left' ? activeBuildVolumeSettings.depthMm * 0.5 : 0) + plate.offsetMm.y,
+                0,
+              ]}
+              onPointerDown={handlePlatePointerDown}
+              onClick={(event) => handlePlateClick(plate.id, event)}
+            >
+              <planeGeometry args={[activeBuildVolumeSettings.widthMm, activeBuildVolumeSettings.depthMm]} />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            </mesh>
           ))}
         <EnableLocalClipping enabled={clipLower != null || clipUpper != null || indicatorPlaneZ != null || !!organicCutKeyGizmo} />
         <CameraProvider cameraRef={cameraRef} />

@@ -79,7 +79,7 @@ msgstr ""
 msgid "{downloaded} / {total} ({pct}%)"
 msgstr ""
 
-#: src/app/page.tsx:482
+#: src/app/page.tsx:483
 #: src/components/controls/ModelStatsCard.tsx:209
 msgid "{hours} h {minutes} min"
 msgstr "{hours} h {minutes} min"
@@ -109,8 +109,8 @@ msgstr ""
 msgid "{minutes} min"
 msgstr "{minutes} min"
 
-#: src/app/page.tsx:474
-#: src/app/page.tsx:483
+#: src/app/page.tsx:475
+#: src/app/page.tsx:484
 #: src/components/controls/ModelStatsCard.tsx:210
 msgid "{minutes} min {seconds} s"
 msgstr ""
@@ -125,6 +125,10 @@ msgstr ""
 
 #: src/features/slicing/components/SlicingPanel.tsx:135
 msgid "{pixels}px XY · {layers}L Z"
+msgstr ""
+
+#: src/components/layout/plateTabMessages.ts:22
+msgid "{plateName} — {modelCount, plural, one {# model} other {# models}}"
 msgstr ""
 
 #: src/features/slicing/components/SlicingPanel.tsx:219
@@ -168,12 +172,12 @@ msgid "<0>{modelName}</0> was imported as an STL file. Our analysis could not de
 msgstr ""
 
 #. Approximate estimated print time (the "~" marks it as a rough estimate). {hours}/{mins} are whole-number quantities.
-#: src/app/page.tsx:466
+#: src/app/page.tsx:467
 msgid "~{hours} h {mins} min"
 msgstr "~{hours} h {mins} min"
 
 #. Approximate estimated print time under an hour (the "~" marks it as a rough estimate).
-#: src/app/page.tsx:467
+#: src/app/page.tsx:468
 msgid "~{mins} min"
 msgstr "~{mins} min"
 
@@ -199,6 +203,10 @@ msgstr ""
 
 #: src/components/controls/autoSupport/autoSupportPanelTabs.ts:146
 msgid "A candidate within this 3D distance of an existing support merges into it instead of starting a new trunk"
+msgstr ""
+
+#: src/components/layout/PlateTabStrip.tsx:240
+msgid "A project always keeps at least one plate"
 msgstr ""
 
 #. <name> is a literal placeholder in the filename, not markup — leave it as-is.
@@ -258,13 +266,18 @@ msgstr ""
 msgid "Add contacts along the edge or corner a pose bears on, so a leaning part is held against toppling and peel (default on)"
 msgstr ""
 
-#: src/app/page.tsx:2262
+#: src/app/page.tsx:2263
 msgid "Add joint"
 msgstr "Ajouter une jonction"
 
 #: src/components/layout/EmptySceneState.tsx:565
 msgid "Add or switch printer anytime from the top bar."
 msgstr "Ajoutez ou changez d'imprimante à tout moment depuis la barre supérieure."
+
+#: src/components/layout/PlateTabStrip.tsx:176
+#: src/components/layout/PlateTabStrip.tsx:177
+msgid "Add plate"
+msgstr ""
 
 #: src/components/layout/EmptySceneState.tsx:537
 #: src/components/layout/OnboardingPrinterLibrary.tsx:413
@@ -508,7 +521,7 @@ msgstr ""
 msgid "Autosave idle delay"
 msgstr ""
 
-#: src/app/page.tsx:1034
+#: src/app/page.tsx:1035
 msgid "Autosave is not working"
 msgstr ""
 
@@ -539,7 +552,7 @@ msgstr ""
 #. View cube face (the side opposite Front), rendered uppercase inside a small 3D cube. Keep it as short as possible.
 #: src/components/layout/FirstRunOnboarding.tsx:273
 #: src/components/layout/OnboardingPrinterLibrary.tsx:279
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1676
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1712
 msgid "Back"
 msgstr ""
 
@@ -661,7 +674,7 @@ msgid "Border Margin"
 msgstr ""
 
 #. View cube face (seen from below), rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1680
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1716
 msgid "Bottom"
 msgstr ""
 
@@ -701,6 +714,10 @@ msgstr "Créer et ajuster les soutiens"
 
 #: src/volumeAnalysis/IslandVolumes/components/IslandVolumesHierarchyCard.tsx:901
 msgid "Build Hierarchy"
+msgstr ""
+
+#: src/components/layout/PlateTabStrip.tsx:110
+msgid "Build plates"
 msgstr ""
 
 #. placeholder {0}: selectedProfilesPrinter.buildVolumeMm?.width ?? '-'
@@ -1183,7 +1200,7 @@ msgstr ""
 msgid "Contoured regions"
 msgstr ""
 
-#: src/app/page.tsx:8055
+#: src/app/page.tsx:8056
 msgid "Converting support data and model metadata"
 msgstr ""
 
@@ -1422,6 +1439,10 @@ msgstr ""
 msgid "Delete Backup Snapshot"
 msgstr ""
 
+#: src/components/layout/PlateTabStrip.tsx:247
+msgid "Delete plate"
+msgstr ""
+
 #: src/components/controls/autoSupport/AutoSupportPresets.tsx:659
 #: src/supports/Settings/components/PresetSelector.tsx:776
 msgid "Delete preset"
@@ -1644,12 +1665,16 @@ msgstr ""
 msgid "Drop supported files"
 msgstr "Déposez des fichiers pris en charge"
 
-#: src/app/page.tsx:10073
+#: src/app/page.tsx:10082
 msgid "Drop supported files to import"
 msgstr ""
 
 #: src/components/controls/autoSupport/AutoSupportPresets.tsx:403
 msgid "Duplicate"
+msgstr ""
+
+#: src/components/layout/PlateTabStrip.tsx:230
+msgid "Duplicate plate"
 msgstr ""
 
 #: src/components/settings/SettingsModal.tsx:1219
@@ -1680,7 +1705,7 @@ msgstr ""
 msgid "Edit printer profile"
 msgstr ""
 
-#: src/app/page.tsx:2268
+#: src/app/page.tsx:2269
 #: src/components/ui/EditorContextMenu.tsx:126
 msgid "Editor"
 msgstr "Éditeur"
@@ -2040,7 +2065,7 @@ msgid "From the community, for the community. Free to use, open to contribute, a
 msgstr ""
 
 #. Orientation label, rendered uppercase on the view cube and on the build plate's front edge. Keep it as short as possible — long words are auto-shrunk to fit and become hard to read.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1672
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1708
 msgid "Front"
 msgstr ""
 
@@ -2488,7 +2513,7 @@ msgid "Last remote backup"
 msgstr ""
 
 #. {timestamp} is a locale-formatted date and time.
-#: src/app/page.tsx:617
+#: src/app/page.tsx:618
 msgid "Last successful autosave: {timestamp}. Save your project manually."
 msgstr ""
 
@@ -2540,7 +2565,7 @@ msgid "Leave the collection as it is"
 msgstr ""
 
 #. View cube face, rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1678
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1714
 msgid "Left"
 msgstr ""
 
@@ -2548,7 +2573,7 @@ msgstr ""
 msgid "Length"
 msgstr ""
 
-#: src/app/page.tsx:8095
+#: src/app/page.tsx:8104
 msgid "Letting DragonFruit finish its startup animation before loading your scene."
 msgstr ""
 
@@ -2624,7 +2649,7 @@ msgstr ""
 msgid "Loading Mesh Files…"
 msgstr ""
 
-#: src/app/page.tsx:8045
+#: src/app/page.tsx:8046
 #: src/features/scene/sceneImportMessages.ts:23
 msgid "Loading Mesh…"
 msgstr ""
@@ -2633,9 +2658,9 @@ msgstr ""
 msgid "Loading remote material…"
 msgstr ""
 
-#: src/app/page.tsx:4314
-#: src/app/page.tsx:8045
-#: src/app/page.tsx:8054
+#: src/app/page.tsx:4315
+#: src/app/page.tsx:8046
+#: src/app/page.tsx:8055
 msgid "Loading Scene…"
 msgstr ""
 
@@ -3086,7 +3111,7 @@ msgstr ""
 msgid "No active printer"
 msgstr "Aucune imprimante active"
 
-#: src/app/page.tsx:1038
+#: src/app/page.tsx:1039
 msgid "No autosave has succeeded this session. Save your project manually."
 msgstr ""
 
@@ -3415,7 +3440,7 @@ msgstr "Ouvrir une scène…"
 msgid "Opening"
 msgstr ""
 
-#: src/app/page.tsx:8092
+#: src/app/page.tsx:8101
 msgid "Opening scene…"
 msgstr ""
 
@@ -3529,6 +3554,18 @@ msgstr ""
 
 #: src/components/scene/scanProgressMessages.ts:27
 msgid "Placing supports"
+msgstr ""
+
+#: src/components/layout/PlateTabStrip.tsx:198
+msgid "Plate context menu"
+msgstr ""
+
+#: src/components/layout/plateTabMessages.ts:27
+msgid "Plate limit reached ({maxPlates})"
+msgstr ""
+
+#: src/components/layout/PlateTabStrip.tsx:124
+msgid "Plate name"
 msgstr ""
 
 #: src/features/slicing/components/SlicingPanel.tsx:3743
@@ -3760,7 +3797,7 @@ msgstr ""
 msgid "Re-slice required after profile change"
 msgstr "Nouveau laminage requis après changement de profil"
 
-#: src/app/page.tsx:4315
+#: src/app/page.tsx:4316
 msgid "Reading autosaved scene…"
 msgstr ""
 
@@ -3901,6 +3938,10 @@ msgstr ""
 msgid "Rename model base name"
 msgstr ""
 
+#: src/components/layout/PlateTabStrip.tsx:215
+msgid "Rename plate"
+msgstr ""
+
 #: src/components/controls/autoSupport/AutoSupportPresets.tsx:461
 msgid "Rename preset"
 msgstr ""
@@ -3998,8 +4039,8 @@ msgstr ""
 msgid "Restore Factory Defaults?"
 msgstr ""
 
-#: src/app/page.tsx:4346
-#: src/app/page.tsx:4357
+#: src/app/page.tsx:4347
+#: src/app/page.tsx:4358
 msgid "Restore Failed"
 msgstr ""
 
@@ -4028,7 +4069,7 @@ msgid "Revert Changes"
 msgstr ""
 
 #. View cube face, rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1677
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1713
 msgid "Right"
 msgstr ""
 
@@ -4362,12 +4403,12 @@ msgid "Selected printer is offline"
 msgstr "L'imprimante sélectionnée est hors ligne"
 
 #. Shown while dragging a selection rectangle right to left, which takes every object the rectangle touches. Mirrors the CAD convention; keep it on one short line.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3149
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3185
 msgid "Selection Mode: Contact (Right to Left)"
 msgstr ""
 
 #. Shown while dragging a selection rectangle left to right, which takes only the objects the rectangle fully encloses. Mirrors the CAD convention; keep it on one short line.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3153
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:3189
 msgid "Selection Mode: Enclosed (Left to Right)"
 msgstr ""
 
@@ -4779,7 +4820,7 @@ msgstr ""
 msgid "Supported: {extensions}"
 msgstr ""
 
-#: src/app/page.tsx:2268
+#: src/app/page.tsx:2269
 msgid "Supports"
 msgstr "Supports"
 
@@ -4869,16 +4910,16 @@ msgstr ""
 msgid "Tension"
 msgstr ""
 
-#: src/app/page.tsx:4359
+#: src/app/page.tsx:4360
 msgid "The autosave recovery file could not be found."
 msgstr ""
 
-#: src/app/page.tsx:4347
-#: src/app/page.tsx:4360
+#: src/app/page.tsx:4348
+#: src/app/page.tsx:4361
 msgid "The autosaved recovery file is corrupted or unreadable."
 msgstr ""
 
-#: src/app/page.tsx:1035
+#: src/app/page.tsx:1036
 msgid "The background recovery save failed repeatedly."
 msgstr ""
 
@@ -4959,7 +5000,7 @@ msgstr "La résine est prête. Et vous ?"
 msgid "The saved run policy the settings below are. Selecting one applies it immediately; the rest of the dialog stays staged until you save."
 msgstr ""
 
-#: src/app/page.tsx:4348
+#: src/app/page.tsx:4349
 msgid "The scene importer rejected or could not parse the autosave data."
 msgstr ""
 
@@ -5083,7 +5124,7 @@ msgstr ""
 msgid "Tip Ø range"
 msgstr ""
 
-#: src/app/page.tsx:2257
+#: src/app/page.tsx:2258
 msgid "Toggle curve"
 msgstr "Basculer la courbe"
 
@@ -5108,7 +5149,7 @@ msgid "Too close to an existing support."
 msgstr ""
 
 #. View cube face (seen from above), rendered uppercase inside a small 3D cube. Keep it as short as possible.
-#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1679
+#: src/components/scene/SceneCanvas/SceneCanvas.tsx:1715
 msgid "Top"
 msgstr ""
 
@@ -5199,7 +5240,7 @@ msgstr ""
 msgid "Unsaved Scene Found"
 msgstr ""
 
-#: src/app/page.tsx:10073
+#: src/app/page.tsx:10082
 msgid "Unsupported file format"
 msgstr ""
 

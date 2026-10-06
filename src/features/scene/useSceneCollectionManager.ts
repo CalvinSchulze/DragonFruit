@@ -82,7 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
-import { assignModelPlates, createPlate, isOffPlate, MAX_PLATES, OFF_PLATE_ID, plateFootprintRect, platesNeedRepack, repackPlates, resolveModelPlateId, selectInteractiveModels, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
+import { addPlateToSet, assignModelPlates, canAddPlate, countModelsByPlate, createPlate, duplicatePlateName, isOffPlate, MAX_PLATES, OFF_PLATE_ID, plateFootprintRect, plateOffsetDelta, platesNeedRepack, removePlateFromSet, renamePlateInSet, repackPlates, resolveModelPlateId, selectInteractiveModels, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -190,6 +190,13 @@ type SceneSnapshotCaptureOptions = {
   platesOverride?: Plate[];
   /** Use when the caller has already computed the *next* active plate. */
   activePlateIdOverride?: string | null;
+};
+
+/** What `deleteModels` resolves to, so a caller can wrap it in its own history entry. */
+type DeleteModelsResult = {
+  models: LoadedModel[];
+  activeModelId: string | null;
+  selectedModelIds: string[];
 };
 
 type TransformHistorySupportSnapshotOptions = {
@@ -1018,6 +1025,7 @@ import {
   pasteModelSupports,
   pasteModelSupportsFromClipboard,
   type SupportClipboardPayload,
+  type SupportPasteTarget,
 } from '@/supports/PlacementLogic/supportClipboard';
 import { clearSupportSelection } from '@/supports/interaction/shared/selection/selectionController';
 import { getRaftSettings, updateRaftSettings, applyImportDefaultRaftSettings, resetRaftSessionModificationFlag } from '@/supports/Rafts/Crenelated/RaftState';
@@ -1694,6 +1702,13 @@ export function useSceneCollectionManager() {
    */
   const interactiveModels = useMemo(
     () => selectInteractiveModels(models, activePlateId),
+    [activePlateId, models],
+  );
+
+  // Per-plate model counts for the plate tabs. Counts the whole project, not
+  // the active plate — showing a count on every tab is the point.
+  const plateModelCounts = useMemo(
+    () => countModelsByPlate(models, activePlateId),
     [activePlateId, models],
   );
 
@@ -4166,12 +4181,25 @@ export function useSceneCollectionManager() {
     });
   }, [models]);
 
-  const deleteModels = useCallback(async (idsInput: string[]) => {
+  /**
+   * Deletes models and everything keyed off them — supports, mesh chunks, the
+   * mesh-modifier store entry — and pushes one history entry for the lot.
+   *
+   * `recordHistory: false` suppresses that push and returns the resulting
+   * scene instead, so a caller performing a larger edit can fold the delete
+   * into a single atomic entry of its own. `deletePlate` is the one caller
+   * that does: a plate and its models must undo together.
+   */
+  const deleteModels = useCallback(async (
+    idsInput: string[],
+    options?: { recordHistory?: boolean },
+  ): Promise<DeleteModelsResult | null> => {
+    const recordHistory = options?.recordHistory ?? true;
     const ids = new Set(idsInput);
-    if (ids.size === 0) return;
+    if (ids.size === 0) return null;
 
     const existing = modelsRef.current.filter((m) => ids.has(m.id));
-    if (existing.length === 0) return;
+    if (existing.length === 0) return null;
 
     // Release the deleted models' compressed mesh chunks (Ph0.1 sub-phase C2).
     // The encode cache this replaced had exactly one `.get` and one `.set` and
@@ -4221,7 +4249,9 @@ export function useSceneCollectionManager() {
     const currentActiveModelId = activeModelIdRef.current;
     const currentSelectedModelIds = selectedModelIdsRef.current;
 
-    const before = captureSceneSnapshot(currentModels, currentActiveModelId, currentSelectedModelIds, { includeSupportState: includeSupportHistory });
+    const before = recordHistory
+      ? captureSceneSnapshot(currentModels, currentActiveModelId, currentSelectedModelIds, { includeSupportState: includeSupportHistory })
+      : null;
 
     existing.forEach((model) => {
       tryRevokeObjectUrl(model.fileUrl);
@@ -4276,13 +4306,21 @@ export function useSceneCollectionManager() {
       }
     }
 
-    const after = captureSceneSnapshot(nextModels, nextActiveModelId, nextSelectedModelIds, { includeSupportState: includeSupportHistory });
-    const deletedLabel = existing.length === 1
-      ? `Delete Model ${existing[0].name}`
-      : `Delete ${existing.length} Models`;
-    pushSceneSnapshotHistory(before, after, deletedLabel);
+    if (before) {
+      const after = captureSceneSnapshot(nextModels, nextActiveModelId, nextSelectedModelIds, { includeSupportState: includeSupportHistory });
+      const deletedLabel = existing.length === 1
+        ? `Delete Model ${existing[0].name}`
+        : `Delete ${existing.length} Models`;
+      pushSceneSnapshotHistory(before, after, deletedLabel);
+    }
 
     console.log(`[SceneCollection] Deleted ${ids.size} model(s) and ${totalRemovedSupports} associated supports.`);
+
+    return {
+      models: nextModels,
+      activeModelId: nextActiveModelId,
+      selectedModelIds: nextSelectedModelIds,
+    };
   }, [pushSceneSnapshotHistory, tryRevokeObjectUrl, waitForUiYield]);
 
   const deleteModel = useCallback((id: string) => {
@@ -4951,6 +4989,252 @@ export function useSceneCollectionManager() {
 
     return createdIds;
   }, [activeModelId, cloneGeometryWithBounds, models, pushSceneSnapshotHistory, selectedModelIds]);
+
+  // ── Plate operations ────────────────────────────────────────────────────
+  //
+  // Together with the scene loader, history restore and `repackPlates`, these
+  // are the only writers of plate state. Each one updates `plateStateRef`
+  // eagerly: `captureSceneSnapshot` and the `setModels` reducer both read the
+  // mirror synchronously, and a React state update has not landed yet by the
+  // time they run in the same tick.
+
+  /** Writes a computed plate set to both React state and the synchronous mirror. */
+  const commitPlateState = useCallback((nextPlates: Plate[], nextActivePlateId: string) => {
+    plateStateRef.current.plates = nextPlates;
+    plateStateRef.current.activePlateId = nextActivePlateId;
+    setPlates(nextPlates);
+    setActivePlateId(nextActivePlateId);
+  }, []);
+
+  /**
+   * Switches which plate is active.
+   *
+   * Not undoable, for the same reason selecting a model is not: it changes
+   * what the user is looking at, not what the project contains. Undo still
+   * moves the active plate, because every snapshot records it (D5) — stepping
+   * back onto an edit made elsewhere takes you to where it happened.
+   */
+  const setActivePlate = useCallback((plateId: string) => {
+    const current = plateStateRef.current;
+    if (current.activePlateId === plateId) return;
+    if (!current.plates.some((plate) => plate.id === plateId)) return;
+
+    // Selection is scoped to the active plate, so carrying it across a switch
+    // would leave the gizmo attached to a model that is now inert.
+    setSelectedModelIds((previous) => (previous.length > 0 ? [] : previous));
+    setActiveModelId((previous) => (previous !== null ? null : previous));
+    commitPlateState(current.plates, plateId);
+  }, [commitPlateState]);
+
+  /** Adds an empty plate at the lowest free slot and activates it. Null at `MAX_PLATES`. */
+  const addPlate = useCallback((): string | null => {
+    const current = plateStateRef.current;
+    const added = addPlateToSet(current.plates, current.buildVolume);
+    if (!added) return null;
+
+    const before = captureSceneSnapshot(modelsRef.current, activeModelIdRef.current, selectedModelIdsRef.current);
+
+    setSelectedModelIds([]);
+    setActiveModelId(null);
+    commitPlateState(added.plates, added.plate.id);
+
+    // The plate set and active plate are passed explicitly: the mirror is
+    // already updated above, but the overrides keep the snapshot independent
+    // of that ordering.
+    const after = captureSceneSnapshot(modelsRef.current, null, [], {
+      platesOverride: added.plates,
+      activePlateIdOverride: added.plate.id,
+    });
+    pushSceneSnapshotHistory(before, after, `Add Plate ${added.plate.name}`);
+
+    return added.plate.id;
+  }, [commitPlateState, pushSceneSnapshotHistory]);
+
+  /** Renames a plate. A blank name falls back to the slot's default name. */
+  const renamePlate = useCallback((plateId: string, name: string) => {
+    const current = plateStateRef.current;
+    const nextPlates = renamePlateInSet(current.plates, plateId, name);
+    if (!nextPlates || !current.activePlateId) return;
+
+    const before = captureSceneSnapshot(modelsRef.current, activeModelIdRef.current, selectedModelIdsRef.current);
+    commitPlateState(nextPlates, current.activePlateId);
+    const after = captureSceneSnapshot(modelsRef.current, activeModelIdRef.current, selectedModelIdsRef.current, {
+      platesOverride: nextPlates,
+    });
+    const renamed = nextPlates.find((plate) => plate.id === plateId);
+    pushSceneSnapshotHistory(before, after, `Rename Plate ${renamed?.name ?? ''}`);
+  }, [commitPlateState, pushSceneSnapshotHistory]);
+
+  /**
+   * Deletes a plate and the models on it.
+   *
+   * Refuses to delete the last plate. Member models go out through
+   * `deleteModels` so supports, mesh chunks and the mesh-modifier store are
+   * cleaned up the one way they are known to be cleaned up correctly — with
+   * its history push suppressed, so the plate and its contents come back on a
+   * single undo.
+   */
+  const deletePlate = useCallback(async (plateId: string) => {
+    const current = plateStateRef.current;
+    const activeId = current.activePlateId;
+    const target = current.plates.find((plate) => plate.id === plateId);
+    if (!target || !activeId) return;
+
+    const mutation = removePlateFromSet(current.plates, activeId, plateId);
+    if (!mutation.changed) return;
+
+    const memberIds = modelsRef.current
+      .filter((model) => resolveModelPlateId(model, activeId) === plateId)
+      .map((model) => model.id);
+
+    const before = captureSceneSnapshot(modelsRef.current, activeModelIdRef.current, selectedModelIdsRef.current, {
+      includeSupportState: memberIds.length > 0,
+    });
+
+    const deleted = memberIds.length > 0
+      ? await deleteModels(memberIds, { recordHistory: false })
+      : null;
+
+    commitPlateState(mutation.plates, mutation.activePlateId);
+
+    const after = captureSceneSnapshot(
+      deleted?.models ?? modelsRef.current,
+      deleted ? deleted.activeModelId : activeModelIdRef.current,
+      deleted ? deleted.selectedModelIds : selectedModelIdsRef.current,
+      {
+        includeSupportState: memberIds.length > 0,
+        platesOverride: mutation.plates,
+        activePlateIdOverride: mutation.activePlateId,
+      },
+    );
+    pushSceneSnapshotHistory(before, after, `Delete Plate ${target.name}`);
+  }, [commitPlateState, deleteModels, pushSceneSnapshotHistory]);
+
+  /**
+   * Copies a plate and everything on it onto a new plate, and activates it.
+   *
+   * Models are translated by the offset between the two plates, which is what
+   * puts their world-space transforms (D1) on the copy. Group and link ids are
+   * remapped rather than shared: a duplicated plate is independent, and a
+   * shared `linkGroupId` would make a transform on one plate drag models on
+   * the other.
+   */
+  const duplicatePlate = useCallback((plateId: string): string | null => {
+    const current = plateStateRef.current;
+    const activeId = current.activePlateId;
+    const source = current.plates.find((plate) => plate.id === plateId);
+    if (!source || !activeId) return null;
+
+    const added = addPlateToSet(current.plates, current.buildVolume, duplicatePlateName(current.plates, source));
+    if (!added) return null;
+
+    const members = modelsRef.current.filter((model) => resolveModelPlateId(model, activeId) === plateId);
+    const delta = plateOffsetDelta(source, added.plate);
+    const translation = new THREE.Vector3(delta.x, delta.y, 0);
+
+    const before = captureSceneSnapshot(modelsRef.current, activeModelIdRef.current, selectedModelIdsRef.current, {
+      includeSupportState: true,
+    });
+
+    const remappedIds = new Map<string, string>();
+    const remap = (sourceId: string | undefined, prefix: string): string | undefined => {
+      if (!sourceId) return undefined;
+      const existing = remappedIds.get(sourceId);
+      if (existing) return existing;
+      const next = `${prefix}-${uuidv4()}`;
+      remappedIds.set(sourceId, next);
+      return next;
+    };
+
+    const supportPasteTargets: SupportPasteTarget[] = [];
+    const copies: LoadedModel[] = members.map((member) => {
+      const id = uuidv4();
+      const transform = {
+        position: member.transform.position.clone().add(translation),
+        rotation: member.transform.rotation.clone(),
+        scale: member.transform.scale.clone(),
+      };
+
+      // Mesh modifiers live in their own module-level map keyed by model id, so
+      // spreading the model object does not carry them.
+      const modifiers = getStoredMeshModifiers(member.id);
+      if (modifiers) storeModelMeshModifiers(id, cloneMeshModifiersShallow(modifiers));
+
+      const payload = captureModelSupportsToClipboard(member.id);
+      if (payload) {
+        supportPasteTargets.push({
+          payload,
+          targetModelId: id,
+          sourceTransform: member.transform,
+          targetTransform: transform,
+        });
+      }
+
+      return {
+        ...member,
+        id,
+        plateId: added.plate.id,
+        geometry: cloneGeometryWithBounds(member.geometry, { shared: true }),
+        transform,
+        groupId: remap(member.groupId, 'group'),
+        linkGroupId: remap(member.linkGroupId, 'link'),
+        meshModifiers: undefined,
+      };
+    });
+
+    beginSupportStateBatch();
+    try {
+      const nextModels = [...modelsRef.current, ...copies];
+
+      // Plates first, so the models reducer sees the new plate as active.
+      commitPlateState(added.plates, added.plate.id);
+      setModels(nextModels);
+      setSelectedModelIds([]);
+      setActiveModelId(null);
+
+      if (supportPasteTargets.length > 0) {
+        pasteModelSupports(supportPasteTargets, { recordHistory: false });
+      }
+
+      const after = captureSceneSnapshot(nextModels, null, [], {
+        includeSupportState: true,
+        platesOverride: added.plates,
+        activePlateIdOverride: added.plate.id,
+      });
+      pushSceneSnapshotHistory(before, after, `Duplicate Plate ${source.name}`);
+    } finally {
+      endSupportStateBatch();
+    }
+
+    console.log(`[SceneCollection] Duplicated plate "${source.name}" with ${copies.length} model(s).`);
+    return added.plate.id;
+  }, [cloneGeometryWithBounds, commitPlateState, pushSceneSnapshotHistory]);
+
+  // The build volume sets the plate pitch, so switching printer profile moves
+  // every plate from slot 1 onward. Member transforms are world space and
+  // include their plate's offset (D1), so they have to travel with their plate
+  // or they are stranded in the gap between plates. A consistency migration,
+  // not a user edit — so no history is pushed (D6).
+  useEffect(() => {
+    const current = plateStateRef.current;
+    if (!current.activePlateId || current.plates.length === 0) return;
+    if (!platesNeedRepack(current.plates, current.buildVolume)) return;
+
+    const repacked = repackPlates(current.plates, modelsRef.current, current.buildVolume, current.activePlateId);
+
+    // The mirror has to hold the repacked plates before `setModels` runs: the
+    // reducer re-derives plate membership for any model whose transform
+    // changed, and against the old offsets it would read the moved models as
+    // sitting in the gap between plates.
+    plateStateRef.current.plates = repacked.plates;
+    setPlates(repacked.plates);
+    if (repacked.movedModelCount > 0) setModels(repacked.models);
+
+    console.log(
+      `[SceneCollection] Build volume changed: repacked ${repacked.movedPlateIds.length} plate(s), `
+      + `moved ${repacked.movedModelCount} model(s).`,
+    );
+  }, [view3dSettings.widthMm]);
 
   // LYS Import (1-step) — dispatched via plugin registry
 
@@ -6202,6 +6486,13 @@ export function useSceneCollectionManager() {
     plates,
     activePlateId,
     activePlateOffsetMm,
+    plateModelCounts,
+    canAddPlate: canAddPlate(plates),
+    setActivePlate,
+    addPlate,
+    renamePlate,
+    deletePlate,
+    duplicatePlate,
     offPlateModels,
     interactiveModels,
     setModelsOffPlate,

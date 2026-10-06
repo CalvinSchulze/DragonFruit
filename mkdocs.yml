@@ -123,6 +123,7 @@ nav:
           - Hotkeys: dev/hotkeys.md
           - Notifications and Toasts: dev/notifications.md
           - System Notifications: dev/system-notifications.md
+          - Build Plates: dev/build-plates.md
           - Support System: dev/support-system.md
           - Support Interaction: dev/support-interaction.md
           - Auto-Supports: dev/auto-supports.md

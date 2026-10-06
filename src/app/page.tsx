@@ -43,6 +43,7 @@ import { useImportExportManager } from '@/features/import-export/useImportExport
 import type { ImportExportManagerDeps } from '@/features/import-export/useImportExportManager';
 import { GlobalUpdateIndicator } from '@/features/updater/GlobalUpdateIndicator';
 import { EmptySceneState } from '@/components/layout/EmptySceneState';
+import { PlateTabStrip } from '@/components/layout/PlateTabStrip';
 import { IslandScanCard } from '@/components/controls/IslandScanCard';
 import { IslandOverlayControls } from '@/components/controls/IslandOverlayControls';
 import { IslandVoxelControls } from '@/components/controls/IslandVoxelControls';
@@ -441,6 +442,20 @@ function areSortedNumberArraysEqual(a: readonly number[], b: readonly number[]):
     }
   }
   return true;
+}
+
+/**
+ * Whether a right-click landed on a surface that owns its own context menu.
+ *
+ * The editor menu opens from capture-phase handlers on `#scene-root`, so it
+ * would otherwise both pre-empt a nested surface's own `onContextMenu` — the
+ * capture handler calls `stopPropagation` — and open on top of it. Such
+ * surfaces opt out with `data-editor-context-menu="skip"`; the plate tab strip
+ * is the one that does today.
+ */
+function ownsItsContextMenu(target: EventTarget | null): boolean {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('[data-editor-context-menu="skip"]'));
 }
 
 function isKeyboardTargetEditable(target: EventTarget | null): boolean {
@@ -5213,6 +5228,7 @@ export default function Home() {
   }, []);
 
   const handleEditorContextMenu = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (ownsItsContextMenu(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
     // Intentionally do not open here: some macOS/WebView paths emit contextmenu
@@ -5705,6 +5721,7 @@ export default function Home() {
 
   const handleEditorPointerDownCapture = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 2) return;
+    if (ownsItsContextMenu(e.target)) return;
     rightClickGestureRef.current = { x: e.clientX, y: e.clientY, moved: false };
   }, []);
 
@@ -5720,6 +5737,7 @@ export default function Home() {
 
   const handleEditorPointerUpCapture = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 2) return;
+    if (ownsItsContextMenu(e.target)) return;
 
     const gesture = rightClickGestureRef.current;
     const moved = Boolean(gesture?.moved);
@@ -10094,6 +10112,7 @@ export default function Home() {
             allModels={scene.allModels}
             plates={scene.plates}
             activePlateId={scene.activePlateId}
+            onActivatePlate={scene.setActivePlate}
             activeModelId={sceneCanvasActiveModelId}
             visualActiveModelId={sceneCanvasVisualActiveModelId}
             selectedModelIds={sceneCanvasSelectedModelIds}
@@ -10332,6 +10351,34 @@ export default function Home() {
               <SnapAngleReadout />
               <RotationHintTooltip />
             </>
+          )}
+
+          {/* Plate tabs sit bottom-centre, clear of the stats card on the
+              left. Hidden over the empty-scene panel (nothing to switch
+              between yet) and in printing mode, where the layer preview owns
+              the bottom of the screen.
+
+              Centred with flex rather than `left-1/2 -translate-x-1/2`: a
+              transform on an ancestor becomes the containing block for
+              `position: fixed`, which would place the strip's context menu
+              relative to this wrapper instead of the viewport. */}
+          {!showEmptyStatePanel && scene.mode !== 'printing' && (
+            <div
+              className="absolute bottom-1 inset-x-0 z-30 flex justify-center pointer-events-none"
+              data-editor-context-menu="skip"
+            >
+              <PlateTabStrip
+                plates={scene.plates}
+                activePlateId={scene.activePlateId}
+                modelCountByPlateId={scene.plateModelCounts.byPlateId}
+                canAddPlate={scene.canAddPlate}
+                onSelectPlate={scene.setActivePlate}
+                onAddPlate={scene.addPlate}
+                onRenamePlate={scene.renamePlate}
+                onDuplicatePlate={scene.duplicatePlate}
+                onDeletePlate={(plateId) => { void scene.deletePlate(plateId); }}
+              />
+            </div>
           )}
 
           {scene.models.length > 0 && (

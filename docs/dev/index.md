@@ -9,6 +9,7 @@ Internals of DragonFruit, for people changing them. Start with [Architecture Ove
 | Understand the shape of the whole thing | [Architecture Overview](architecture-overview.md) |
 | Add a UI feature with state | [State and Stores](state-and-stores.md), [Registration Seams](registration-seams.md) |
 | Make something undoable | [History and Undo/Redo](history-and-undo-redo.md) |
+| Work on build plates, or ask "which models?" | [Build Plates](build-plates.md), [ADR-0042](../adr/0042-plate-coordinate-frames.md) |
 | Show the user a message | [Notifications and Toasts](notifications.md) |
 | Bind a key | [Hotkeys](hotkeys.md), [Support Placement Modifiers](../reference/support-placement-modifiers.md) |
 | Move or frame the 3D camera | [Camera Navigation](camera-navigation.md) |
