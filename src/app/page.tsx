@@ -7140,14 +7140,19 @@ export default function Home() {
 
     const width = scene.view3dSettings.widthMm;
     const depth = scene.view3dSettings.depthMm;
-    const minX = scene.view3dSettings.originMode === 'front_left' ? 0 : -width * 0.5;
-    const minY = scene.view3dSettings.originMode === 'front_left' ? 0 : -depth * 0.5;
+    const originX = scene.view3dSettings.originMode === 'front_left' ? 0 : -width * 0.5;
+    const originY = scene.view3dSettings.originMode === 'front_left' ? 0 : -depth * 0.5;
+    // Tests world bounds of `scene.models` — the active plate — so the box has
+    // to sit on that plate. Reduces to the pre-plates box on the world origin.
+    const minX = originX + scene.activePlateOffsetMm.x;
+    const minY = originY + scene.activePlateOffsetMm.y;
 
     return new THREE.Box3(
       new THREE.Vector3(minX, minY, 0),
       new THREE.Vector3(minX + width, minY + depth, scene.view3dSettings.maxZMm),
     );
   }, [
+    scene.activePlateOffsetMm,
     scene.view3dSettings.depthMm,
     scene.view3dSettings.enabled,
     scene.view3dSettings.maxZMm,
@@ -10069,6 +10074,9 @@ export default function Home() {
 
           <SceneCanvas
             models={scene.models}
+            allModels={scene.allModels}
+            plates={scene.plates}
+            activePlateId={scene.activePlateId}
             activeModelId={sceneCanvasActiveModelId}
             visualActiveModelId={sceneCanvasVisualActiveModelId}
             selectedModelIds={sceneCanvasSelectedModelIds}

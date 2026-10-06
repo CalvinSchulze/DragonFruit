@@ -94,7 +94,11 @@ export function platesNeedRepack(plates: readonly Plate[], buildVolume: PlateBui
  * volume sits relative to it — the same `front_left ? 0 : -half` rule the view
  * settings use, in one place instead of restated per call site.
  */
-export function plateFootprintRect(plate: Plate, buildVolume: PlateBuildVolume): PlateFootprintRect {
+export function plateFootprintRect(
+  /** Only the offset is read, so a bare `{ offsetMm }` is enough. */
+  plate: Pick<Plate, 'offsetMm'>,
+  buildVolume: PlateBuildVolume,
+): PlateFootprintRect {
   const width = sanitizeSpan(buildVolume.widthMm);
   const depth = sanitizeSpan(buildVolume.depthMm);
   const frontLeft = buildVolume.originMode === 'front_left';

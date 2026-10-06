@@ -110,3 +110,22 @@ test('plate membership ignores Z: a lifted model stays on its plate', () => {
 test('a project with no plates leaves every model off-plate rather than guessing', () => {
   assert.equal(classifyModelPlate(rect(-5, -5, 5, 5), [], BUILD_VOLUME), OFF_PLATE_ID);
 });
+
+test('plate containment generalises to N plates: a model on plate 3 is properly placed', () => {
+  // Regression guard for the import prompt that reported every other plate's
+  // models as "outside the build plate" because it only knew the origin plate.
+  const plates = platesForSlots([0, 1, 2]);
+  const insideSomePlate = (r: PlateFootprintRect) => plates.some((plate) => {
+    const f = plateFootprintRect(plate, BUILD_VOLUME);
+    return r.minX >= f.minX && r.maxX <= f.maxX && r.minY >= f.minY && r.maxY <= f.maxY;
+  });
+
+  const pitch = BUILD_VOLUME.widthMm + PLATE_GAP_MM;
+  assert.equal(insideSomePlate(rect(-5, -5, 5, 5)), true, 'on plate 1');
+  assert.equal(insideSomePlate(rect(pitch - 5, -5, pitch + 5, 5)), true, 'on plate 2');
+  assert.equal(insideSomePlate(rect(2 * pitch - 5, -5, 2 * pitch + 5, 5)), true, 'on plate 3');
+  assert.equal(insideSomePlate(rect(3 * pitch - 5, -5, 3 * pitch + 5, 5)), false, 'past the last plate');
+
+  // Containment, not overlap: hanging over an edge is still a placement problem.
+  assert.equal(insideSomePlate(rect(90, -5, 140, 5)), false, 'straddling plate 1\'s edge');
+});

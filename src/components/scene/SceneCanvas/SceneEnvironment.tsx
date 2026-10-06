@@ -226,6 +226,7 @@ export function Helpers({
   showBuildPlate,
   safetyMarginMm,
   frontLabel = 'Front',
+  showPlateLogo = true,
 }: {
   gridWidthMm?: number;
   gridDepthMm?: number;
@@ -241,6 +242,13 @@ export function Helpers({
    * reconciler, where the i18n provider is out of scope.
    */
   frontLabel?: string;
+  /**
+   * Whether this plate carries the branding decal. Only the active plate does:
+   * repeating it across every plate reads as wallpaper rather than as a mark on
+   * the machine. Off here also skips the texture's fetch and canvas entirely,
+   * so inactive plates cost nothing to brand.
+   */
+  showPlateLogo?: boolean;
 }) {
   const nullRaycast = () => null;
   const shouldShowGrid = showGrid ?? true;
@@ -419,6 +427,7 @@ export function Helpers({
 
   // Rasterize SVG to canvas and use as texture for robust WebGL support
   const plateLogoTexture = React.useMemo(() => {
+    if (!showPlateLogo) return null;
     const texture = new THREE.Texture();
     fetch('/dragonfruit_assets/branding/text_logo.svg')
       .then(res => res.text())
@@ -452,7 +461,7 @@ export function Helpers({
         img.src = url;
       });
     return texture;
-  }, []);
+  }, [showPlateLogo]);
 
   React.useEffect(() => {
     return () => {
@@ -470,7 +479,7 @@ export function Helpers({
 
   React.useEffect(() => {
     return () => {
-      plateLogoTexture.dispose();
+      plateLogoTexture?.dispose();
     };
   }, [plateLogoTexture]);
 
@@ -694,7 +703,7 @@ export function Helpers({
         />
       )}
 
-      {shouldShowGrid && shouldShowBuildPlate && (
+      {shouldShowGrid && shouldShowBuildPlate && plateLogoTexture && (
         <group
           position={[0, 0, plateLogoZ]}
           visible={shouldShowBuildPlate && clampedBuildPlateOpacity > 0.001}

@@ -175,6 +175,7 @@ import {
   type DiagnosticsBenchmarkStressProfile,
 } from '@/components/modals/diagnosticsBenchmarkEvents';
 import { DEFAULT_VIEW3D_SETTINGS, type View3DSettings } from '@/components/settings/view3dPreferences';
+import { isOffPlate, plateFootprintRect, resolveModelPlateId, type Plate as ScenePlate, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   computeApproxModelWorldBounds,
   computePreciseModelWorldBounds,
@@ -440,8 +441,63 @@ const DEFAULT_CROSS_SECTION_CAP_DEBUG_STATE: CrossSectionCapDebugPanelState = {
   },
 };
 
+/**
+ * How much of its normal presence an inactive plate keeps. Dim enough to read
+ * as "not the one you are working on", solid enough to still see what is there.
+ */
+const INACTIVE_PLATE_DIM = 0.35;
+
+/** Dim level for a model sitting on a plate that is not the active one. */
+const INACTIVE_PLATE_MODEL_OPACITY = 0.28;
+
+/**
+ * Dim level for an off-plate model. Lighter than an inactive plate's models:
+ * it is still interactive, so it should not look switched off.
+ */
+const OFF_PLATE_MODEL_OPACITY = 0.5;
+
+/** One plate on the world origin: what every caller without plate state means. */
+const FALLBACK_PLATES: ScenePlate[] = [
+  { id: '__single-plate__', name: 'Plate 1', slotIndex: 0, offsetMm: { x: 0, y: 0 } },
+];
+
+/**
+ * A plate's printable volume in world space: its footprint, inset by the
+ * safety margins, extruded to the build height.
+ *
+ * The footprint comes from `plateFootprintRect` so the `originMode` rule lives
+ * in one place. A plate on the world origin reduces this to the box this canvas
+ * computed before plates existed, margins included.
+ */
+function computePlateBounds(
+  settings: View3DSettings | undefined,
+  offsetMm: PlateOffsetMm,
+): THREE.Box3 | null {
+  if (!settings?.enabled) return null;
+
+  const rect = plateFootprintRect({ offsetMm }, {
+    widthMm: settings.widthMm,
+    depthMm: settings.depthMm,
+    originMode: settings.originMode,
+  });
+
+  const sm = settings.safetyMarginMm;
+  const marginFront = sm?.front ?? 0;
+  const marginBack = sm?.back ?? 0;
+  const marginLeft = sm?.left ?? 0;
+  const marginRight = sm?.right ?? 0;
+
+  return new THREE.Box3(
+    new THREE.Vector3(rect.minX + marginLeft, rect.minY + marginFront, 0),
+    new THREE.Vector3(rect.maxX - marginRight, rect.maxY - marginBack, settings.maxZMm),
+  );
+}
+
 export function SceneCanvas({
   models: modelsProp = [],
+  allModels: allModelsProp,
+  plates,
+  activePlateId,
   activeModelId: activeModelIdProp,
   visualActiveModelId,
   selectedModelIds,
@@ -555,6 +611,15 @@ export function SceneCanvas({
   onNewDeviceDetected,
 }: {
   models?: LoadedModel[];
+  /**
+   * Every plate's models. Rendering is the one place that needs all of them:
+   * inactive plates draw dimmed and inert, off-plate models draw dimmed but
+   * stay interactive. Everything else here is an active-plate concern and uses
+   * `models`. Omitted falls back to `models`.
+   */
+  allModels?: LoadedModel[];
+  plates?: ScenePlate[];
+  activePlateId?: string | null;
   cavityGeometryByModelId?: Map<string, THREE.BufferGeometry>;
   onClearSelection?: () => void;
   activeModelId?: string | null;
@@ -949,6 +1014,15 @@ export function SceneCanvas({
     return [];
   }, [geom, meshColor, meshVisible, modelsProp]);
 
+  /**
+   * Every plate's models, for rendering only. Falls back to the active plate's
+   * models so the legacy and standalone call paths are unchanged.
+   */
+  const allModelsForRender = React.useMemo<LoadedModel[]>(
+    () => (allModelsProp && allModelsProp.length > 0 ? allModelsProp : models),
+    [allModelsProp, models],
+  );
+
   const modelById = React.useMemo(() => {
     const map = new Map<string, LoadedModel>();
     for (const model of models) {
@@ -1329,12 +1403,39 @@ export function SceneCanvas({
   );
   const activeBuildVolumeSettings = view3dSettings ?? DEFAULT_VIEW3D_SETTINGS;
 
+  // Plate layout, as this canvas sees it. Without a `plates` prop — the legacy
+  // and standalone call paths — the scene is one plate on the world origin,
+  // which is what every pre-plates caller already meant.
+  const resolvedPlates = React.useMemo<ScenePlate[]>(
+    () => (plates && plates.length > 0 ? plates : FALLBACK_PLATES),
+    [plates],
+  );
+
+  const resolvedActivePlateId = React.useMemo(
+    () => (
+      activePlateId && resolvedPlates.some((plate) => plate.id === activePlateId)
+        ? activePlateId
+        : resolvedPlates[0].id
+    ),
+    [activePlateId, resolvedPlates],
+  );
+
+  /** Origin of the active plate — what the camera frames and orbits around. */
+  const activePlateOffsetMm = React.useMemo<PlateOffsetMm>(() => {
+    const active = resolvedPlates.find((plate) => plate.id === resolvedActivePlateId);
+    return active ? active.offsetMm : { x: 0, y: 0 };
+  }, [resolvedActivePlateId, resolvedPlates]);
+
+
+  // Centre of the ACTIVE plate, so camera framing and the load intro follow a
+  // plate switch instead of staring at wherever plate 1 happens to be.
   const buildVolumeCenterTarget = React.useMemo(() => {
-    const centerX = activeBuildVolumeSettings.originMode === 'front_left' ? activeBuildVolumeSettings.widthMm * 0.5 : 0;
-    const centerY = activeBuildVolumeSettings.originMode === 'front_left' ? activeBuildVolumeSettings.depthMm * 0.5 : 0;
+    const centerX = (activeBuildVolumeSettings.originMode === 'front_left' ? activeBuildVolumeSettings.widthMm * 0.5 : 0) + activePlateOffsetMm.x;
+    const centerY = (activeBuildVolumeSettings.originMode === 'front_left' ? activeBuildVolumeSettings.depthMm * 0.5 : 0) + activePlateOffsetMm.y;
     const centerZ = activeBuildVolumeSettings.maxZMm * 0.5;
     return new THREE.Vector3(centerX, centerY, centerZ);
   }, [
+    activePlateOffsetMm,
     activeBuildVolumeSettings.depthMm,
     activeBuildVolumeSettings.maxZMm,
     activeBuildVolumeSettings.originMode,
@@ -1813,25 +1914,23 @@ export function SceneCanvas({
     return meshBounds.clone().union(supportRaftBounds);
   }, [BUILD_VOLUME_BOUNDS_EPS_MM, computeSupportAndRaftWorldBounds]);
 
-  const buildVolumeBounds = React.useMemo(() => {
-    if (!activeBuildVolumeSettings?.enabled) return null;
+  const platesWithBounds = React.useMemo(
+    () => resolvedPlates.map((plate) => ({
+      plate,
+      bounds: computePlateBounds(activeBuildVolumeSettings, plate.offsetMm),
+      isActive: plate.id === resolvedActivePlateId,
+    })),
+    [activeBuildVolumeSettings, resolvedActivePlateId, resolvedPlates],
+  );
 
-    const width = activeBuildVolumeSettings.widthMm;
-    const depth = activeBuildVolumeSettings.depthMm;
-    const minX = activeBuildVolumeSettings.originMode === 'front_left' ? 0 : -width * 0.5;
-    const minY = activeBuildVolumeSettings.originMode === 'front_left' ? 0 : -depth * 0.5;
-
-    const sm = activeBuildVolumeSettings.safetyMarginMm;
-    const marginFront = sm?.front ?? 0;
-    const marginBack = sm?.back ?? 0;
-    const marginLeft = sm?.left ?? 0;
-    const marginRight = sm?.right ?? 0;
-
-    return new THREE.Box3(
-      new THREE.Vector3(minX + marginLeft, minY + marginFront, 0),
-      new THREE.Vector3(minX + width - marginRight, minY + depth - marginBack, activeBuildVolumeSettings.maxZMm),
-    );
-  }, [activeBuildVolumeSettings]);
+  // The active plate's bounds, under the name and shape the ~20 memos below
+  // already use. Every one of them is an active-plate concern — out-of-bounds
+  // reporting, marquee, gizmos, bounding boxes — so they stay untouched, and a
+  // single-plate scene computes exactly what it did before plates existed.
+  const buildVolumeBounds = React.useMemo(
+    () => platesWithBounds.find((entry) => entry.isActive)?.bounds ?? null,
+    [platesWithBounds],
+  );
 
   const cachedModelWorldBoundsRef = React.useRef<Map<string, THREE.Box3>>(new Map());
   const activeTransformOverrideModelId = React.useMemo(
@@ -6028,17 +6127,34 @@ export function SceneCanvas({
           directionalIntensity={directionalIntensity ?? 0.3}
           headlightIntensity={headlightIntensity ?? 1.0}
         />
-        <Helpers
-          gridWidthMm={activeBuildVolumeSettings.widthMm}
-          gridDepthMm={activeBuildVolumeSettings.depthMm}
-          originMinX={activeBuildVolumeSettings.originMode === 'front_left' ? 0 : -activeBuildVolumeSettings.widthMm * 0.5}
-          originMinY={activeBuildVolumeSettings.originMode === 'front_left' ? 0 : -activeBuildVolumeSettings.depthMm * 0.5}
-          buildPlateOpacity={(!thumbnailCaptureActive || includeBuildPlateDuringCapture) ? buildPlateOpacity : 0}
-          showGrid={(!thumbnailCaptureActive || includeHelpersGridDuringCapture) && !hideGridHelpers}
-          showBuildPlate={!thumbnailCaptureActive || includeBuildPlateDuringCapture}
-          safetyMarginMm={activeBuildVolumeSettings.safetyMarginMm}
-          frontLabel={frontFaceLabel}
-        />
+        {/*
+          One plate slab and grid per plate. `originMinX/Y` already position
+          everything this component draws, so a plate's offset is just a shifted
+          origin — no new positioning prop. Inactive plates are dimmed and carry
+          no logo. During thumbnail capture only the active plate is drawn at
+          all, so the thumbnail frames the active plate alone.
+        */}
+        {platesWithBounds
+          .filter(({ isActive }) => isActive || !thumbnailCaptureActive)
+          .map(({ plate, isActive }) => (
+            <Helpers
+              key={plate.id}
+              gridWidthMm={activeBuildVolumeSettings.widthMm}
+              gridDepthMm={activeBuildVolumeSettings.depthMm}
+              originMinX={(activeBuildVolumeSettings.originMode === 'front_left' ? 0 : -activeBuildVolumeSettings.widthMm * 0.5) + plate.offsetMm.x}
+              originMinY={(activeBuildVolumeSettings.originMode === 'front_left' ? 0 : -activeBuildVolumeSettings.depthMm * 0.5) + plate.offsetMm.y}
+              buildPlateOpacity={
+                (!thumbnailCaptureActive || includeBuildPlateDuringCapture)
+                  ? buildPlateOpacity * (isActive ? 1 : INACTIVE_PLATE_DIM)
+                  : 0
+              }
+              showGrid={(!thumbnailCaptureActive || includeHelpersGridDuringCapture) && !hideGridHelpers}
+              showBuildPlate={!thumbnailCaptureActive || includeBuildPlateDuringCapture}
+              safetyMarginMm={activeBuildVolumeSettings.safetyMarginMm}
+              frontLabel={frontFaceLabel}
+              showPlateLogo={isActive}
+            />
+          ))}
         <EnableLocalClipping enabled={clipLower != null || clipUpper != null || indicatorPlaneZ != null || !!organicCutKeyGizmo} />
         <CameraProvider cameraRef={cameraRef} />
         <CameraProjectionController mode={cameraProjectionMode} perspectiveFov={perspectiveFov} sceneRadius={orthoSceneRadiusMm} />
@@ -6068,7 +6184,7 @@ export function SceneCanvas({
             <SelectionManager enabled={cameraInteractionCycleEnabled && mode === 'prepare'} mode={mode} handleCanvasDeselect={false} />
 
             <React.Suspense fallback={null}>
-              {models.map((model) => {
+              {allModelsForRender.map((model) => {
                 const meshGroupRefCallback = meshGroupRefCallbacks.current[model.id]
                   ?? ((node: THREE.Group | null) => {
                     meshRefs.current[model.id] = node;
@@ -6086,11 +6202,36 @@ export function SceneCanvas({
                   actualMeshRefCallbacks.current[model.id] = actualMeshRefCallback;
                 }
 
+                // Which plate this model is on decides how much of the scene
+                // it gets to participate in.
+                //
+                //   active plate — everything, exactly as before plates.
+                //   another plate — visible, dimmed, and completely inert. You
+                //     switch to that plate to work on it, so nothing here may
+                //     select, hover, gizmo or raycast it.
+                //   off-plate — visible, dimmed, but fully interactive. There
+                //     is no plate to switch to, so dragging it onto one is the
+                //     only way back and it has to stay reachable where it is.
+                const modelPlateId = resolveModelPlateId(model, resolvedActivePlateId);
+                const isOffPlateModel = isOffPlate(modelPlateId);
+                const isOnActivePlate = modelPlateId === resolvedActivePlateId;
+                const isInertPlateModel = !isOnActivePlate && !isOffPlateModel;
+
+                // The thumbnail frames the active plate, so nothing else is in it.
+                if (thumbnailCaptureActive && !isOnActivePlate) return null;
+
+                // Reuses StlMesh's existing dithered dim material rather than a
+                // new one. A selected off-plate model renders normally so the
+                // selection tint still reads — the dim path has no tinting.
+                const plateDimOpacity = isInertPlateModel
+                  ? INACTIVE_PLATE_MODEL_OPACITY
+                  : (isOffPlateModel && !selectedModelIdSet.has(model.id) ? OFF_PLATE_MODEL_OPACITY : undefined);
+
                 const isCaptureTintModel = thumbnailCaptureActive && model.visible;
-                const isActive = isCaptureTintModel || model.id === activeModelId;
-                const isSelectedModel = isCaptureTintModel || selectedModelIdSet.has(model.id);
-                const isMarqueeCandidate = isMarqueeSelecting && marqueeCandidateIdSet.has(model.id);
-                const suppressModelInteraction = !modelPickerEnabled || !cameraInteractionCycleEnabled || isGizmoDragging || isPostGizmoInteractionGuardActive || supportGizmoInteractionActive || isOrbitInteracting || isWheelZoomInteracting;
+                const isActive = !isInertPlateModel && (isCaptureTintModel || model.id === activeModelId);
+                const isSelectedModel = !isInertPlateModel && (isCaptureTintModel || selectedModelIdSet.has(model.id));
+                const isMarqueeCandidate = !isInertPlateModel && isMarqueeSelecting && marqueeCandidateIdSet.has(model.id);
+                const suppressModelInteraction = isInertPlateModel || !modelPickerEnabled || !cameraInteractionCycleEnabled || isGizmoDragging || isPostGizmoInteractionGuardActive || supportGizmoInteractionActive || isOrbitInteracting || isWheelZoomInteracting;
                 const interactionLodEnabled = (isOrbitInteracting || isWheelZoomInteracting || spaceMouseNavigationActive) && !isActive;
                 const supportNonSelectedOpacity = mode === 'support' && !!activeModelId && !isActive ? 0.5 : undefined;
                 const shouldHideDuplicateSourceModel = Boolean(
@@ -6139,6 +6280,7 @@ export function SceneCanvas({
                   }
                   : transformToUse;
                 const showOutOfBoundsOverlay = !!activeBuildVolumeSettings?.enabled
+                  && isOnActivePlate
                   && outOfBoundsModelIds.has(model.id)
                   && !interactionLodEnabled;
                 // Use per-model visibility
@@ -6190,8 +6332,8 @@ export function SceneCanvas({
                       onSupportHover={handleSupportHover}
                       onActiveModelChange={onActiveModelChange}
                       onSelectModeDragStart={handleSelectModeDragStart}
-                      disableRaycast={disableRaycast || !modelPickerEnabled || !cameraInteractionCycleEnabled}
-                      blockSupportPlacement={!cameraInteractionCycleEnabled || isGizmoDragging || blockSupportPlacement}
+                      disableRaycast={isInertPlateModel || disableRaycast || !modelPickerEnabled || !cameraInteractionCycleEnabled}
+                      blockSupportPlacement={isInertPlateModel || !cameraInteractionCycleEnabled || isGizmoDragging || blockSupportPlacement}
                       suppressNextClickRef={suppressNextCanvasClickRef}
                       isSelected={
                         isCaptureTintModel ||
@@ -6207,7 +6349,7 @@ export function SceneCanvas({
                       selectedTintColor={modelSelectedTintColor}
                       hoverTintStrength={hoverTintStrength}
                       selectedTintStrength={selectedTintStrength}
-                      supportNonSelectedOpacity={supportNonSelectedOpacity}
+                      supportNonSelectedOpacity={supportNonSelectedOpacity ?? plateDimOpacity}
                       interactionLodActive={interactionLodEnabled}
                       showOutOfBoundsOverlay={showOutOfBoundsOverlay}
                       outOfBoundsMin={shaderOutOfBoundsBounds?.min ?? null}
@@ -6218,7 +6360,7 @@ export function SceneCanvas({
                       supportPlacementGuideLineWidthMm={supportPlacementGuideLineWidthMm}
                       supportPlacementGuideOpacity={0.62}
                       suppressModelInteraction={suppressModelInteraction}
-                      isExternallyHovered={hoveredModelId === model.id}
+                      isExternallyHovered={!isInertPlateModel && hoveredModelId === model.id}
                       deferExternalTransformUpdates={
                         isActive
                         && mode === 'prepare'
@@ -6516,38 +6658,46 @@ export function SceneCanvas({
                   ))
                 : null}
 
-              {!thumbnailCaptureActive && activeBuildVolumeSettings?.enabled && buildVolumeBoxGeometry && buildVolumeEdgeGeometry && (
-                <group
-                  ref={buildVolumeBoundsOverlayRef}
-                  userData={{ thumbnailHelperType: 'buildVolumeOverlay' }}
-                  renderOrder={28}
-                  position={[
-                    (buildVolumeBounds!.min.x + buildVolumeBounds!.max.x) * 0.5,
-                    (buildVolumeBounds!.min.y + buildVolumeBounds!.max.y) * 0.5,
-                    activeBuildVolumeSettings.maxZMm * 0.5,
-                  ]}
-                  raycast={() => null}
-                >
-                  <mesh geometry={buildVolumeBoxGeometry} raycast={() => null} renderOrder={27}>
-                    <meshBasicMaterial
-                      color={outOfBoundsModels.length > 0 ? '#ff5b6f' : '#78b7ff'}
-                      transparent
-                      opacity={0.04}
-                      depthWrite={false}
-                      side={THREE.BackSide}
-                    />
-                  </mesh>
-                  <lineSegments geometry={buildVolumeEdgeGeometry} renderOrder={29} raycast={() => null}>
-                    <lineBasicMaterial
-                      color={outOfBoundsModels.length > 0 ? '#ff5b6f' : '#8abfff'}
-                      transparent
-                      opacity={0.36}
-                      depthWrite={false}
-                      depthTest
-                    />
-                  </lineSegments>
-                </group>
-              )}
+              {/*
+                One overlay per plate. The box and edge geometries are shared by
+                every plate — same dimensions, different position — so N plates
+                allocate nothing extra. The out-of-bounds tint is an
+                active-plate concern, so inactive plates stay neutral and dim.
+              */}
+              {!thumbnailCaptureActive && activeBuildVolumeSettings?.enabled && buildVolumeBoxGeometry && buildVolumeEdgeGeometry
+                && platesWithBounds.map(({ plate, bounds, isActive }) => (bounds ? (
+                  <group
+                    key={plate.id}
+                    ref={isActive ? buildVolumeBoundsOverlayRef : undefined}
+                    userData={isActive ? { thumbnailHelperType: 'buildVolumeOverlay' } : undefined}
+                    renderOrder={28}
+                    position={[
+                      (bounds.min.x + bounds.max.x) * 0.5,
+                      (bounds.min.y + bounds.max.y) * 0.5,
+                      activeBuildVolumeSettings.maxZMm * 0.5,
+                    ]}
+                    raycast={() => null}
+                  >
+                    <mesh geometry={buildVolumeBoxGeometry} raycast={() => null} renderOrder={27}>
+                      <meshBasicMaterial
+                        color={isActive && outOfBoundsModels.length > 0 ? '#ff5b6f' : '#78b7ff'}
+                        transparent
+                        opacity={isActive ? 0.04 : 0.02}
+                        depthWrite={false}
+                        side={THREE.BackSide}
+                      />
+                    </mesh>
+                    <lineSegments geometry={buildVolumeEdgeGeometry} renderOrder={29} raycast={() => null}>
+                      <lineBasicMaterial
+                        color={isActive && outOfBoundsModels.length > 0 ? '#ff5b6f' : '#8abfff'}
+                        transparent
+                        opacity={isActive ? 0.36 : 0.12}
+                        depthWrite={false}
+                        depthTest
+                      />
+                    </lineSegments>
+                  </group>
+                ) : null))}
 
               {/* Raft system (Crenelated) - uses supports roots + active model footprint */}
               {/* Wrap all support/raft geometry in a drag group so they move as one during gizmo drags */}

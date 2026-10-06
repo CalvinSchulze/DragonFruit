@@ -82,7 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
-import { assignModelPlates, createPlate, isOffPlate, MAX_PLATES, OFF_PLATE_ID, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
+import { assignModelPlates, createPlate, isOffPlate, MAX_PLATES, OFF_PLATE_ID, plateFootprintRect, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -1835,18 +1835,35 @@ export function useSceneCollectionManager() {
     return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
   }, []);
 
+  /**
+   * Whether a footprint sits fully on *some* plate. Containment, not overlap:
+   * this answers "is this model properly placed", so a model hanging over an
+   * edge is not, which is stricter than `classifyModelPlate`'s membership test.
+   *
+   * Reads plates from the mirror rather than React state, because the scene
+   * loader calls this in the same pass that adopts a file's plates, before a
+   * re-render has delivered them. A single plate on the world origin reduces
+   * this to the box this computed before plates existed.
+   */
   const isRectInsidePlate = useCallback((rect: Rect2D) => {
-    const minX = view3dSettings.originMode === 'front_left' ? 0 : -view3dSettings.widthMm * 0.5;
-    const maxX = minX + view3dSettings.widthMm;
-    const minY = view3dSettings.originMode === 'front_left' ? 0 : -view3dSettings.depthMm * 0.5;
-    const maxY = minY + view3dSettings.depthMm;
+    const buildVolume = {
+      widthMm: view3dSettings.widthMm,
+      depthMm: view3dSettings.depthMm,
+      originMode: view3dSettings.originMode,
+    };
+    const currentPlates = plateStateRef.current.plates.length > 0
+      ? plateStateRef.current.plates
+      : [{ offsetMm: { x: 0, y: 0 } }];
 
-    return (
-      rect.minX >= minX
-      && rect.maxX <= maxX
-      && rect.minY >= minY
-      && rect.maxY <= maxY
-    );
+    return currentPlates.some((plate) => {
+      const footprint = plateFootprintRect(plate, buildVolume);
+      return (
+        rect.minX >= footprint.minX
+        && rect.maxX <= footprint.maxX
+        && rect.minY >= footprint.minY
+        && rect.maxY <= footprint.maxY
+      );
+    });
   }, [view3dSettings.depthMm, view3dSettings.originMode, view3dSettings.widthMm]);
 
   const footprintForTransform = useCallback((size: THREE.Vector3, transform: ModelTransform) => {
@@ -5547,7 +5564,13 @@ export function useSceneCollectionManager() {
         sourceTransformsByModelId.set(imported.id, cloneTransform(imported.transform));
       }
 
-      const offPlateImportedModels = importedModels.filter((model) => !isModelFootprintInsidePlate(model));
+      // A model the file deliberately staged off-plate is not a placement
+      // problem to solve — it is where someone put it. Only models that fell
+      // off every plate without being marked as staged are worth prompting
+      // about, which is exactly the raw-world-coordinate import case.
+      const offPlateImportedModels = importedModels.filter(
+        (model) => !isOffPlate(model.plateId) && !isModelFootprintInsidePlate(model),
+      );
       const shouldPromptForPlacement = offPlateImportedModels.length > 0 && !options?.suppressPlacementPrompt;
 
       // Preserve authored placement by default. Only auto-arrange if models are off-plate
