@@ -82,7 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
-import { createPlate, MAX_PLATES, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume } from '@/features/scene/plates';
+import { createPlate, MAX_PLATES, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -1695,6 +1695,14 @@ export function useSceneCollectionManager() {
     () => models.filter((model) => resolveModelPlateId(model, activePlateId) === activePlateId),
     [activePlateId, models],
   );
+
+  // The active plate's *recorded* offset, not the derived one: it is what the
+  // member transforms were written against, and `repackPlates` is what brings
+  // the two back together when the build volume changes.
+  const activePlateOffsetMm = useMemo<PlateOffsetMm>(() => {
+    const active = plates.find((plate) => plate.id === activePlateId);
+    return active ? active.offsetMm : { x: 0, y: 0 };
+  }, [activePlateId, plates]);
 
   // Dev-only invariant checks — see multi-volume-refactor.md §3. Plate state is
   // reachable from history restore and scene load, so the assertions are cheap
@@ -6133,6 +6141,7 @@ export function useSceneCollectionManager() {
     allModels: models,
     plates,
     activePlateId,
+    activePlateOffsetMm,
     activeModelId,
     setActiveModelId,
     selectedModelIds,

@@ -96,6 +96,14 @@ const job = assembleSliceJob({
   Lumen), the merged metadata carries the material's stored per-format values, or the plugin's
   defaults when none are stored, in place of the material profile's own exposure fields. NanoDLP has
   no such adapter and keeps the profile's values.
+- **One plate per job, in plate-local space.** A slice covers the active build plate only, so
+  callers pass `scene.models` (not `allModels`) together with that plate's `plateOffsetMm`. Model
+  transforms and support geometry are world space, and `TriangleFloatCollector` is the single place
+  that subtracts the offset — the slicer only ever sees coordinates relative to the plate it is
+  slicing, so plate 3 is centred in the build volume exactly as plate 1 would be. The build volume
+  itself comes from the printer profile and is plate-independent; the in-bounds test in
+  `runSliceExportOrchestrator` translates the volume to the plate rather than the models to the
+  origin. An omitted or slot-0 offset leaves the prepared mesh byte-identical.
 - **Not here:** mesh transport, thumbnails and plugin metadata payloads
   (`attachJobMetadataPayloads`). The caller adds those.
 
@@ -111,6 +119,9 @@ const job = assembleSliceJob({
   `slice run --job` with the one the app hands the native slicer, every field and the whole metadata,
   for four anti-aliasing choices. Only the mesh transport, the model triangle count, the thumbnail
   and the output path are left out.
+- `src/features/slicing/__tests__/plateOffsetSlicing.test.ts` proves the plate-local conversion:
+  slot 0 is byte-identical to no offset at all, an offset moves X/Y and never Z, and a model with
+  its supports and raft on plate 2 prepares the same mesh it would on plate 1.
 - `src/features/slicing/__tests__/sliceAntiAliasing.test.ts` pins the anti-aliasing decision for
   every printer, auto preset and eight overrides; regenerate with `UPDATE_SLICE_AA_GOLDEN=1` and
   review the diff of `fixtures/sliceAntiAliasing.golden.json` like code.

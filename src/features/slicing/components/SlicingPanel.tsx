@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { AlertTriangle, ChevronDown, CircleHelp, Cpu, Download, Edit3, ExternalLink, Layers3, Play, Printer, Timer, X } from 'lucide-react';
 import { MouseTooltip } from '@/components/ui/MouseTooltip';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
+import type { PlateOffsetMm } from '@/features/scene/plates';
 import { KNOWN_SOURCE_EXTENSION_STRIP_RE } from '@/features/plugins/pluginFileTypeExtensions';
 import { Button, Card, CardHeader, IconButton } from '@/components/atoms';
 import { ScrollableNumberField } from '@/components/ui/scrollableNumberField';
@@ -71,6 +72,8 @@ export type SliceIntent = 'file' | 'upload' | 'print' | 'preview' | 'uvtools';
 interface SlicingPanelProps {
   models: LoadedModel[];
   excludedModelIds?: readonly string[];
+  /** Origin of the plate `models` sit on. Omitted means the world origin. */
+  plateOffsetMm?: PlateOffsetMm;
   activeModel: LoadedModel | null;
   estimatedLayerCountOverride?: number | null;
   estimatedLayerHeightMmOverride?: number | null;
@@ -735,6 +738,7 @@ const AUTO_AA_PRESET_OPTIONS: ReadonlyArray<{
 
 export function SlicingPanel({
   models,
+  plateOffsetMm,
   excludedModelIds = [],
   activeModel,
   estimatedLayerCountOverride,
@@ -1907,6 +1911,7 @@ export function SlicingPanel({
       const result = await runSliceExportOrchestrator({
         models,
         excludedModelIds,
+        plateOffsetMm,
         printerProfile: activePrinterProfile,
         materialProfile: materialProfileForSlicing,
         filenameBase: sliceFilenameBase || activePrinterProfile.name || 'slice_export',

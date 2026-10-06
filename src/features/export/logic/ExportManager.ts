@@ -975,6 +975,10 @@ export class ExportManager {
           exportObjects.push(scopedSupports);
         }
       } else if (supportsGroup) {
+        // Unscoped fallback: the live group holds every plate's supports. Only
+        // reachable for a supports-only export whose model scope resolved to
+        // nothing, and harmless while a project has one plate — but a caller
+        // that wants plate scoping must pass `sceneContext.models`.
         supportsGroup.updateMatrixWorld(true);
         exportObjects.push(supportsGroup);
       }

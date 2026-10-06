@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import * as THREE from 'three';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
+import type { PlateOffsetMm } from '@/features/scene/plates';
 import { type MaterialProfile, type PrinterProfile, getActiveMaterialProfile, getActivePrinterProfile } from '@/features/profiles/profileStore';
 import { calculateTipOffset } from '@/supports/rendering/calculateTipOffset';
 import {
@@ -47,6 +48,12 @@ export type RasterLayerZipExportOptions = {
   onProgress?: (done: number, total: number, phase: string) => void;
   flushBinaryMeshChunk?: (chunk: Uint8Array) => Promise<void>;
   meshChunkTargetBytes?: number;
+  /**
+   * Origin of the plate being sliced, in world millimetres. The prepared mesh
+   * is translated by its negation so the rasterizer always works in plate-local
+   * space. Omitted (or slot 0) means the plate sits on the world origin.
+   */
+  plateOffsetMm?: PlateOffsetMm;
 };
 
 function normalizeMeshChunkTargetBytes(value: number | null | undefined): number {
@@ -302,14 +309,21 @@ class TriangleFloatCollector {
   
   private chunkElementLimit = Number.POSITIVE_INFINITY;
 
+  private originOffsetX = 0;
+
+  private originOffsetY = 0;
+
   constructor(
     initialTriangleCapacity: number,
     flushCallback?: (chunk: Uint8Array) => Promise<void>,
     chunkTargetBytes?: number,
+    originOffset?: PlateOffsetMm,
   ) {
     const safeTriangleCapacity = Math.max(1, Math.floor(initialTriangleCapacity));
     this.data = new Float32Array(safeTriangleCapacity * 9);
     this.flushCallback = flushCallback;
+    this.originOffsetX = Number.isFinite(originOffset?.x) ? (originOffset as PlateOffsetMm).x : 0;
+    this.originOffsetY = Number.isFinite(originOffset?.y) ? (originOffset as PlateOffsetMm).y : 0;
 
     if (flushCallback) {
       const normalizedChunkBytes = normalizeMeshChunkTargetBytes(chunkTargetBytes);
@@ -351,15 +365,27 @@ class TriangleFloatCollector {
     cz: number,
   ): void {
     this.ensureCapacity(9);
+    // The only world -> plate-local conversion in the slice pipeline. Everything
+    // upstream stays in world space; the rasterizer only ever sees coordinates
+    // relative to the plate being sliced. Subtracting an all-zero offset is
+    // exact in IEEE 754, so a slot-0 (single-plate) scene is byte-identical.
+    const offsetX = this.originOffsetX;
+    const offsetY = this.originOffsetY;
+    const lax = ax - offsetX;
+    const lay = ay - offsetY;
+    const lbx = bx - offsetX;
+    const lby = by - offsetY;
+    const lcx = cx - offsetX;
+    const lcy = cy - offsetY;
     const base = this.cursor;
-    this.data[base] = ax;
-    this.data[base + 1] = ay;
+    this.data[base] = lax;
+    this.data[base + 1] = lay;
     this.data[base + 2] = az;
-    this.data[base + 3] = bx;
-    this.data[base + 4] = by;
+    this.data[base + 3] = lbx;
+    this.data[base + 4] = lby;
     this.data[base + 5] = bz;
-    this.data[base + 6] = cx;
-    this.data[base + 7] = cy;
+    this.data[base + 6] = lcx;
+    this.data[base + 7] = lcy;
     this.data[base + 8] = cz;
     this.cursor = base + 9;
     this.triangleCountValue += 1;
@@ -369,11 +395,11 @@ class TriangleFloatCollector {
       this.maxZValue = triMaxZ;
     }
 
-    const triMinX = Math.min(ax, bx, cx);
-    const triMinY = Math.min(ay, by, cy);
+    const triMinX = Math.min(lax, lbx, lcx);
+    const triMinY = Math.min(lay, lby, lcy);
     const triMinZ = Math.min(az, bz, cz);
-    const triMaxX = Math.max(ax, bx, cx);
-    const triMaxY = Math.max(ay, by, cy);
+    const triMaxX = Math.max(lax, lbx, lcx);
+    const triMaxY = Math.max(lay, lby, lcy);
 
     if (triMinX < this.minXValue) this.minXValue = triMinX;
     if (triMinY < this.minYValue) this.minYValue = triMinY;
@@ -2089,6 +2115,7 @@ export async function buildSolidSliceMeshForWasm(options: RasterLayerZipExportOp
     modelTriangleEstimate + 4096,
     options.flushBinaryMeshChunk,
     options.meshChunkTargetBytes,
+    options.plateOffsetMm,
   );
 
   // Push model-only triangles first (across all models), then support-only.

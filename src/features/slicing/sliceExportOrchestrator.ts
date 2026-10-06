@@ -1,5 +1,6 @@
 import type { MaterialProfile, PrinterProfile } from '@/features/profiles/profileStore';
 import type { LoadedModel } from '@/features/scene/useSceneCollectionManager';
+import type { PlateOffsetMm } from '@/features/scene/plates';
 import { Box3, Vector3 } from 'three';
 import { computeApproxModelWorldBounds, computePreciseModelWorldBounds, isBoundsDisjointFromVolume } from '@/utils/modelBounds';
 import { buildSolidSliceMeshForWasm } from './rasterLayerZipExport';
@@ -83,6 +84,13 @@ function resolveMeshChunkTargetBytes(initialMeshStagingBytes: number): number {
 export type SliceExportOrchestratorOptions = {
     models: LoadedModel[];
     excludedModelIds?: readonly string[];
+    /**
+     * Origin of the plate these models sit on, in world millimetres. The mesh is
+     * translated into plate-local space during preparation, so the slicer sees
+     * the active plate centred in the build volume no matter which plate it is.
+     * Omitted means the world origin, i.e. a single-plate project.
+     */
+    plateOffsetMm?: PlateOffsetMm;
     printerProfile: PrinterProfile;
     materialProfile: MaterialProfile;
     filenameBase: string;
@@ -258,7 +266,15 @@ export async function runSliceExportOrchestrator(options: SliceExportOrchestrato
     const halfWidth = Math.max(1, Number(options.printerProfile.buildVolumeMm.width) || 1) * 0.5;
     const halfDepth = Math.max(1, Number(options.printerProfile.buildVolumeMm.depth) || 1) * 0.5;
     const buildHeight = Math.max(1, Number(options.printerProfile.buildVolumeMm.height) || 1);
-    const buildVolume = new Box3(new Vector3(-halfWidth, -halfDepth, 0), new Vector3(halfWidth, halfDepth, buildHeight));
+    // Model transforms are world space, so the in-bounds test has to compare
+    // against the plate's volume where it actually sits. A plate on the world
+    // origin (slot 0) gives the same box as before plates existed.
+    const plateOriginX = Number.isFinite(options.plateOffsetMm?.x) ? options.plateOffsetMm!.x : 0;
+    const plateOriginY = Number.isFinite(options.plateOffsetMm?.y) ? options.plateOffsetMm!.y : 0;
+    const buildVolume = new Box3(
+        new Vector3(plateOriginX - halfWidth, plateOriginY - halfDepth, 0),
+        new Vector3(plateOriginX + halfWidth, plateOriginY + halfDepth, buildHeight),
+    );
     const visibleModels = options.models.filter((model) => {
         if (!model.visible || excludedModelIdSet.has(model.id)) return false;
         const approximate = computeApproxModelWorldBounds(model.geometry, model.transform);
@@ -468,6 +484,7 @@ export async function runSliceExportOrchestrator(options: SliceExportOrchestrato
             materialProfile: options.materialProfile,
             filenameBase: options.filenameBase,
             supportTipShrinkPercent,
+            plateOffsetMm: options.plateOffsetMm,
             flushBinaryMeshChunk: meshTransferMode === 'streamed'
                 ? handleMeshChunk
                 : meshTransferMode === 'file-backed'

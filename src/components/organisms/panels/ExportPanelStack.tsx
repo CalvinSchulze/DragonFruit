@@ -87,6 +87,7 @@ export function ExportPanelStack({
       <SlicingPanel
         key="export-slicing"
         models={scene.models}
+        plateOffsetMm={scene.activePlateOffsetMm}
         excludedModelIds={excludedSliceModelIds}
         activeModel={scene.activeModel}
         estimatedLayerCountOverride={estimatedSlicerLayerCount}
