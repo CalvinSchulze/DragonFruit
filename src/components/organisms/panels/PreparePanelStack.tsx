@@ -23,6 +23,7 @@ export type PreparePanelStackProps = {
   organicCut: OrganicCutSession;
 
   outsidePlateModelIds: React.ComponentProps<typeof ModelManagerPanel>['outsidePlateModelIds'];
+  stagedModelIds: React.ComponentProps<typeof ModelManagerPanel>['stagedModelIds'];
   handleModelSelection: React.ComponentProps<typeof ModelManagerPanel>['onSelect'];
   handleModelRangeSelection: React.ComponentProps<typeof ModelManagerPanel>['onSelectRange'];
   handleGroupSelection: React.ComponentProps<typeof ModelManagerPanel>['onSelectGroup'];
@@ -74,6 +75,7 @@ export function PreparePanelStack({
   arrange,
   organicCut,
   outsidePlateModelIds,
+  stagedModelIds,
   handleModelSelection,
   handleModelRangeSelection,
   handleGroupSelection,
@@ -196,8 +198,9 @@ export function PreparePanelStack({
     <>
       <ModelManagerPanel
         key="prepare-models"
-        models={scene.models}
+        models={scene.interactiveModels}
         outsidePlateModelIds={outsidePlateModelIds}
+        stagedModelIds={stagedModelIds}
         activeModelId={scene.activeModelId}
         selectedModelIds={scene.selectedModelIds}
         onSelect={handleModelSelection}

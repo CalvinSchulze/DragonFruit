@@ -175,7 +175,7 @@ import {
   type DiagnosticsBenchmarkStressProfile,
 } from '@/components/modals/diagnosticsBenchmarkEvents';
 import { DEFAULT_VIEW3D_SETTINGS, type View3DSettings } from '@/components/settings/view3dPreferences';
-import { isOffPlate, plateFootprintRect, resolveModelPlateId, type Plate as ScenePlate, type PlateOffsetMm } from '@/features/scene/plates';
+import { isOffPlate, plateFootprintRect, resolveModelPlateId, selectInteractiveModels, type Plate as ScenePlate, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   computeApproxModelWorldBounds,
   computePreciseModelWorldBounds,
@@ -1014,6 +1014,23 @@ export function SceneCanvas({
     return [];
   }, [geom, meshColor, meshVisible, modelsProp]);
 
+  // Plate layout, as this canvas sees it. Without a `plates` prop — the legacy
+  // and standalone call paths — the scene is one plate on the world origin,
+  // which is what every pre-plates caller already meant.
+  const resolvedPlates = React.useMemo<ScenePlate[]>(
+    () => (plates && plates.length > 0 ? plates : FALLBACK_PLATES),
+    [plates],
+  );
+
+  const resolvedActivePlateId = React.useMemo(
+    () => (
+      activePlateId && resolvedPlates.some((plate) => plate.id === activePlateId)
+        ? activePlateId
+        : resolvedPlates[0].id
+    ),
+    [activePlateId, resolvedPlates],
+  );
+
   /**
    * Every plate's models, for rendering only. Falls back to the active plate's
    * models so the legacy and standalone call paths are unchanged.
@@ -1033,10 +1050,10 @@ export function SceneCanvas({
    * their plate is active. Returns `models` unchanged when nothing is staged,
    * so a scene without off-plate models keeps the identity it always had.
    */
-  const interactiveModels = React.useMemo<LoadedModel[]>(() => {
-    const offPlate = allModelsForRender.filter((model) => isOffPlate(model.plateId));
-    return offPlate.length > 0 ? [...models, ...offPlate] : models;
-  }, [allModelsForRender, models]);
+  const interactiveModels = React.useMemo<LoadedModel[]>(
+    () => selectInteractiveModels(allModelsForRender, resolvedActivePlateId),
+    [allModelsForRender, resolvedActivePlateId],
+  );
 
   const modelById = React.useMemo(() => {
     const map = new Map<string, LoadedModel>();
@@ -1417,23 +1434,6 @@ export function SceneCanvas({
     getNativeSpaceMouseActive,
   );
   const activeBuildVolumeSettings = view3dSettings ?? DEFAULT_VIEW3D_SETTINGS;
-
-  // Plate layout, as this canvas sees it. Without a `plates` prop — the legacy
-  // and standalone call paths — the scene is one plate on the world origin,
-  // which is what every pre-plates caller already meant.
-  const resolvedPlates = React.useMemo<ScenePlate[]>(
-    () => (plates && plates.length > 0 ? plates : FALLBACK_PLATES),
-    [plates],
-  );
-
-  const resolvedActivePlateId = React.useMemo(
-    () => (
-      activePlateId && resolvedPlates.some((plate) => plate.id === activePlateId)
-        ? activePlateId
-        : resolvedPlates[0].id
-    ),
-    [activePlateId, resolvedPlates],
-  );
 
   /** Origin of the active plate — what the camera frames and orbits around. */
   const activePlateOffsetMm = React.useMemo<PlateOffsetMm>(() => {
@@ -2874,7 +2874,7 @@ export function SceneCanvas({
   const modelMarqueeMatrices = React.useMemo(() => {
     const map = new Map<string, THREE.Matrix4>();
 
-    for (const model of models) {
+    for (const model of interactiveModels) {
       if (!model.visible) continue;
 
       const t = (model.id === activeTransformOverrideModelId && transform) ? transform : model.transform;
@@ -2886,7 +2886,7 @@ export function SceneCanvas({
     }
 
     return map;
-  }, [activeTransformOverrideModelId, models, transform]);
+  }, [activeTransformOverrideModelId, interactiveModels, transform]);
 
   // Projected meshes are heavy to build and identical for every pointer move of
   // one drag, so they are cached until the camera, the viewport or a model
@@ -2913,7 +2913,7 @@ export function SceneCanvas({
     }
 
     const meshes = new Map<string, ProjectedMesh>();
-    for (const model of models) {
+    for (const model of interactiveModels) {
       if (!model.visible) continue;
 
       const matrix = modelMarqueeMatrices.get(model.id);
@@ -2925,7 +2925,7 @@ export function SceneCanvas({
 
     projectedModelMeshesRef.current = { matrices: modelMarqueeMatrices, cameraKey, viewportKey, meshes };
     return meshes;
-  }, [modelMarqueeMatrices, models]);
+  }, [interactiveModels, modelMarqueeMatrices]);
 
   // The outline of each model's raft, at the plate and at its top, so a drag
   // can catch the raft the same way it catches the model and its supports.
@@ -3030,7 +3030,9 @@ export function SceneCanvas({
 
     const selectedIds: string[] = [];
 
-    for (const model of models) {
+    // Active-plate and staged models both — a marquee is how you bulk-recover a
+    // scattered import. Inactive plates stay unreachable.
+    for (const model of interactiveModels) {
       if (!model.visible) continue;
 
       const mesh = projectedMeshes.get(model.id);
@@ -3072,7 +3074,7 @@ export function SceneCanvas({
   }, [
     customPrepareMarqueeSelection,
     getProjectedModelMeshes,
-    models,
+    interactiveModels,
     raftMarqueeRingsByModelId,
     supportMarqueeShapesByModelId,
   ]);

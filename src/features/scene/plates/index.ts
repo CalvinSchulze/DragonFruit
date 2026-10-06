@@ -19,6 +19,7 @@ export {
   plateOffsetsEqual,
   resolveModelPlateId,
   platesNeedRepack,
+  selectInteractiveModels,
 } from './plateLayout';
 export { repackPlates, type RepackableModel, type RepackPlatesResult } from './repackPlates';
 export {

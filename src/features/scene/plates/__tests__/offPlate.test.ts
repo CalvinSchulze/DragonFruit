@@ -9,6 +9,7 @@ import {
   isOffPlate,
   plateFootprintRect,
   resolveModelPlateId,
+  selectInteractiveModels,
   type Plate,
   type PlateFootprintRect,
 } from '../index';
@@ -128,4 +129,35 @@ test('plate containment generalises to N plates: a model on plate 3 is properly 
 
   // Containment, not overlap: hanging over an edge is still a placement problem.
   assert.equal(insideSomePlate(rect(90, -5, 140, 5)), false, 'straddling plate 1\'s edge');
+});
+
+test('selectInteractiveModels is the active plate plus staged, never another plate', () => {
+  const plates = platesForSlots([0, 1]);
+  const all = [
+    { id: 'active', plateId: plates[0].id },
+    { id: 'other', plateId: plates[1].id },
+    { id: 'staged', plateId: OFF_PLATE_ID },
+    { id: 'unstamped' },
+  ];
+
+  const ids = selectInteractiveModels(all, plates[0].id).map((m) => m.id);
+
+  assert.deepEqual(ids, ['active', 'staged', 'unstamped'], 'an unstamped model still resolves to the active plate');
+  assert.ok(!ids.includes('other'), 'a model on another plate is inert and must not be selectable');
+});
+
+test('selectInteractiveModels keeps scene order, so the list and the viewport agree', () => {
+  const plates = platesForSlots([0]);
+  const all = [
+    { id: 'a', plateId: plates[0].id },
+    { id: 'b', plateId: OFF_PLATE_ID },
+    { id: 'c', plateId: plates[0].id },
+  ];
+
+  assert.deepEqual(selectInteractiveModels(all, plates[0].id).map((m) => m.id), ['a', 'b', 'c']);
+});
+
+test('selectInteractiveModels without an active plate returns everything rather than guessing', () => {
+  const all = [{ id: 'a', plateId: 'p1' }];
+  assert.equal(selectInteractiveModels(all, null), all);
 });

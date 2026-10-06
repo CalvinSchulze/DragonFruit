@@ -161,3 +161,28 @@ export function classifyModelPlate(
 
   return bestPlateId ?? OFF_PLATE_ID;
 }
+
+/**
+ * The models a user can act on: those on the active plate, plus those staged
+ * off-plate.
+ *
+ * Models on *other* plates are deliberately excluded — they are inert until
+ * their plate is active. Off-plate models are included because there is no
+ * plate to switch to: selecting and dragging one back onto a plate is the only
+ * way to recover it, so every surface that offers selection has to include
+ * them. Shared by the viewport and the model list precisely so the two cannot
+ * drift into disagreeing about what is selectable.
+ *
+ * Not the slicing or export set — those follow the active plate alone.
+ */
+export function selectInteractiveModels<T extends { plateId?: string }>(
+  allModels: readonly T[],
+  activePlateId: string | null,
+): T[] {
+  if (!activePlateId) return allModels as T[];
+
+  return allModels.filter((model) => {
+    const plateId = resolveModelPlateId(model, activePlateId);
+    return plateId === activePlateId || plateId === OFF_PLATE_ID;
+  });
+}

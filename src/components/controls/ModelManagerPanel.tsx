@@ -36,6 +36,13 @@ type GroupSelectMode = 'single' | 'add';
 interface ModelManagerPanelProps {
   models: LoadedModel[];
   outsidePlateModelIds?: string[];
+  /**
+   * Models staged off every plate. Kept separate from `outsidePlateModelIds`:
+   * that one means "on the active plate but hanging over its edge", which is
+   * fixed by nudging the model, while these are on no plate at all and are
+   * fixed by dragging one onto a plate.
+   */
+  stagedModelIds?: string[];
   activeModelId: string | null;
   selectedModelIds: string[];
   onSelect: (id: string, mode?: SelectMode) => void;
@@ -76,6 +83,7 @@ type PanelContextMenuState = {
 };
 
 const OUTSIDE_PLATE_GROUP_ID = '__system_outside_plate__';
+const STAGED_GROUP_ID = '__system_staged__';
 
 // Mesh stats shown under a model's name, e.g. "1.37M triangles • 3 shells".
 // Triangle counts are compacted for width, so the plural category comes from the
@@ -114,6 +122,7 @@ const splitModelNameSuffix = (name: string): { base: string; suffix: string } =>
 export function ModelManagerPanel({
   models,
   outsidePlateModelIds = [],
+  stagedModelIds = [],
   activeModelId,
   selectedModelIds,
   onSelect,
@@ -185,9 +194,12 @@ export function ModelManagerPanel({
   const selectedSet = useMemo(() => new Set(selectedModelIds), [selectedModelIds]);
 
   const grouped = useMemo<GroupedEntry[]>(() => {
+    const stagedSet = new Set(stagedModelIds);
     const outsidePlateSet = new Set(outsidePlateModelIds);
-    const outsideModels = models.filter((model) => outsidePlateSet.has(model.id));
-    const inPlateModels = models.filter((model) => !outsidePlateSet.has(model.id));
+    // Staged wins: a model on no plate is not also "outside" one.
+    const stagedModels = models.filter((model) => stagedSet.has(model.id));
+    const outsideModels = models.filter((model) => !stagedSet.has(model.id) && outsidePlateSet.has(model.id));
+    const inPlateModels = models.filter((model) => !stagedSet.has(model.id) && !outsidePlateSet.has(model.id));
 
     const groupedMap = new Map<string, GroupedEntry>();
 
@@ -219,16 +231,27 @@ export function ModelManagerPanel({
       .reduce<GroupedEntry[]>((acc, group) => {
         acc.push(group);
         return acc;
-      }, outsideModels.length > 0
-        ? [{
-            id: OUTSIDE_PLATE_GROUP_ID,
-            name: _(msg({ message: 'Outside plate', comment: 'Name of the automatic folder collecting models that sit outside the build plate.' })),
-            models: [...outsideModels].sort((a, b) => a.name.localeCompare(b.name)),
-            isGrouped: true,
-            isSystemGroup: true,
-          }]
-        : []);
-  }, [_, models, outsidePlateModelIds]);
+      }, [
+        ...(stagedModels.length > 0
+          ? [{
+              id: STAGED_GROUP_ID,
+              name: _(msg({ message: 'Not on a plate', comment: 'Name of the automatic folder collecting models staged in the scene but not placed on any build plate.' })),
+              models: [...stagedModels].sort((a, b) => a.name.localeCompare(b.name)),
+              isGrouped: true,
+              isSystemGroup: true,
+            }]
+          : []),
+        ...(outsideModels.length > 0
+          ? [{
+              id: OUTSIDE_PLATE_GROUP_ID,
+              name: _(msg({ message: 'Outside plate', comment: 'Name of the automatic folder collecting models that sit outside the build plate.' })),
+              models: [...outsideModels].sort((a, b) => a.name.localeCompare(b.name)),
+              isGrouped: true,
+              isSystemGroup: true,
+            }]
+          : []),
+      ]);
+  }, [_, models, outsidePlateModelIds, stagedModelIds]);
 
   const contextModelId = contextMenu?.modelId;
   const contextGroupId = contextMenu?.groupId;

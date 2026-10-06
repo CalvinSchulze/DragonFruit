@@ -82,7 +82,7 @@ import {
 } from '@/features/mesh-modifiers/meshModifierStore';
 import { clearPreparedGeometryCacheForModel } from '@/features/mesh-modifiers/prepareModelGeometry';
 import { splitClassifiedSupportGeometry } from '@/features/scene/splitClassifiedSupports';
-import { assignModelPlates, createPlate, isOffPlate, MAX_PLATES, OFF_PLATE_ID, plateFootprintRect, platesNeedRepack, repackPlates, resolveModelPlateId, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
+import { assignModelPlates, createPlate, isOffPlate, MAX_PLATES, OFF_PLATE_ID, plateFootprintRect, platesNeedRepack, repackPlates, resolveModelPlateId, selectInteractiveModels, type Plate, type PlateBuildVolume, type PlateOffsetMm } from '@/features/scene/plates';
 import {
   applyModelGrouping,
   applyModelGroupUngrouping,
@@ -1684,6 +1684,17 @@ export function useSceneCollectionManager() {
   const offPlateModels = useMemo(
     () => models.filter((model) => isOffPlate(model.plateId)),
     [models],
+  );
+
+  /**
+   * What the user can select and act on: the active plate's models plus the
+   * staged ones. The model list uses this rather than `models`, so a staged
+   * model can be found and put back on a plate; slicing and export keep using
+   * `models`, which is the active plate alone.
+   */
+  const interactiveModels = useMemo(
+    () => selectInteractiveModels(models, activePlateId),
+    [activePlateId, models],
   );
 
   // The active plate's *recorded* offset, not the derived one: it is what the
@@ -6192,6 +6203,7 @@ export function useSceneCollectionManager() {
     activePlateId,
     activePlateOffsetMm,
     offPlateModels,
+    interactiveModels,
     setModelsOffPlate,
     activeModelId,
     setActiveModelId,

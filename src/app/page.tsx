@@ -7160,6 +7160,14 @@ export default function Home() {
     scene.view3dSettings.widthMm,
   ]);
 
+  // Models staged on no plate. The model list groups these separately from
+  // models that merely hang over the active plate's edge: one is fixed by
+  // putting it on a plate, the other by nudging it.
+  const stagedModelIds = React.useMemo(
+    () => scene.offPlateModels.filter((model) => model.visible).map((model) => model.id),
+    [scene.offPlateModels],
+  );
+
   const outsidePlateModelIds = React.useMemo(() => {
     if (!buildVolumeBounds) return [] as string[];
     const BUILD_VOLUME_BOUNDS_EPS_MM = 0.01;
@@ -9802,6 +9810,7 @@ export default function Home() {
               arrange: arrange,
               organicCut: organicCut,
               outsidePlateModelIds: outsidePlateModelIds,
+              stagedModelIds: stagedModelIds,
               handleModelSelection: handleModelSelection,
               handleModelRangeSelection: handleModelRangeSelection,
               handleGroupSelection: handleGroupSelection,
